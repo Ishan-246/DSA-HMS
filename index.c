@@ -1,2974 +1,1069 @@
+/*  HOSTEL MANAGEMENT SYSTEM  -  DSA Project (C)
+ *
+ *  Feature                    Data structure used
+ *  -----------------------    ------------------------------------
+ *  Student records            Array of structures
+ *  Search student             Linear search, Binary search, Hashing
+ *  Room allotment + undo      Stack
+ *  Room waiting list          Circular queue
+ *  Complaints                 Priority queue (sorted linked list)
+ *  Gate entry / exit          Doubly linked list + singly linked list
+ *  Hostel fee payments        AVL tree
+ *  Fire exit route            Graph (BFS and Dijkstra)
+ *  Sort students              Insertion, Selection, Merge sort
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
 #include <time.h>
 
-#define MAX_STUDENTS 200
-#define MAX_ROOMS 100
-#define MAX_STAFF 50
-#define MAX_COMPLAINTS 100
-#define HASH_SIZE 101
-#define MAX_NAME 50
-#define ROLL_LEN 12          /* e.g. "N254" */
-#define PHONE_LEN 11         /* 10 digits + '\0' */
-#define MAX_UNDO 100
-#define MAX_NODES 120
-
-#define NUM_FLOORS 3         /* floors 1-3; ground floor has no rooms */
-#define ROOMS_PER_FLOOR 4
+#define MAX_STUDENTS  100
+#define NUM_ROOMS     12      /* 3 floors x 4 rooms: 101-104, 201-204, 301-304 */
 #define ROOM_CAPACITY 4
+#define HASH_SIZE     31
+#define HOSTEL_FEE    100000
+#define LAUNDRY_FEE   500
+#define CURFEW_HOUR   22      /* 10 PM */
 
-#define HOSTEL_FEE 100000    /* Rs per academic year, due in July */
-#define LAUNDRY_FEE 500      /* Rs per month */
-#define LAUNDRY_CLOTHES 75   /* clothes per month */
-#define GATE_OPEN_HOUR 6     /* gate reopens at 6 AM after curfew */
-#define CLEAN_HISTORY 30     /* cleaning records kept per room */
 
-#define INF 1000000000
-
-/* ================================================================
-   CORE ENTITIES
-   ================================================================ */
+/* ======================= STUDENTS AND ROOMS ======================= */
 
 typedef struct {
-    char rollNo[ROLL_LEN];
-    char name[MAX_NAME];
-    char phone[PHONE_LEN];
-    char parentPhone1[PHONE_LEN];
-    char parentPhone2[PHONE_LEN];
-    int roomNo;          /* 0 = not allotted */
-    int hostelFeePaid;   /* 0 = pending, 1 = paid */
-    time_t feePaidOn;
-    int laundryMonth;    /* YYYYMM of last laundry payment, 0 = never */
+    int  roll;
+    char name[50];
+    char phone[15];
+    char parentPhone[15];
+    int  roomNo;        /* 0 = no room yet */
+    int  laundryPaid;   /* 1 = paid for this month */
 } Student;
 
 typedef struct {
     int roomNo;
-    int capacity;
-    int occupied;
     int floor;
+    int occupied;
 } Room;
-
-typedef enum {
-    ROLE_SWEEPER,
-    ROLE_ELECTRICIAN,
-    ROLE_PLUMBER,
-    ROLE_SECURITY
-} StaffRole;
-
-typedef struct {
-    int staffId;
-    char name[MAX_NAME];
-    StaffRole role;
-    int assignedFloor;   /* 0 = not on duty */
-} Staff;
-
-typedef enum {
-    COMP_LOW = 3,
-    COMP_MEDIUM = 2,
-    COMP_HIGH = 1
-} Priority;
-
-typedef struct {
-    int complaintId;
-    int studentIndex;
-    int roomNo;
-    char description[100];
-    Priority priority;
-    int resolved;
-} Complaint;
-
-
-/* ================================================================
-   GLOBAL STORAGE
-   ================================================================
-   Students are never removed or reordered in students[], so an
-   index into it stays valid forever. The hash table, BST, gate
-   logs, queues and roll-number order all store these indices.
-*/
 
 Student students[MAX_STUDENTS];
 int studentCount = 0;
 
-Room rooms[MAX_ROOMS];
-int roomCount = 0;
+Room rooms[NUM_ROOMS];
 
-Staff staff[MAX_STAFF];
-int staffCount = 0;
-
-/* Set once at startup: boys hostel = 10 PM, girls hostel = 9 PM */
-int curfewHour = 22;
-const char* hostelType = "Boys";
-
-
-/* ================================================================
-   FUNCTION PROTOTYPES
-   ================================================================ */
-
-/* Input / utility helpers */
-void read_line(const char* prompt, char* buf, int size);
-int read_int(const char* prompt);
-int read_int_range(const char* prompt, int min, int max);
-int read_yes_no(const char* prompt);
-void read_roll(const char* prompt, char* roll);
-void read_phone(const char* prompt, char* phone);
-int compare_roll(const char* a, const char* b);
-void format_time(time_t t, char* buf, int size);
-int current_month(void);
-
-/* Module 1 */
-int linear_search_student(const char* rollNo);
-int binary_search_student(const char* rollNo);
-int add_student(Student s);
-void print_student(int index);
-
-/* Module 2 */
-void initialize_rooms(void);
-int find_room(int roomNo);
-void push_undo(int studentIndex, int previousRoomNo);
-int allot_room(int studentIndex, int roomNo);
-void undo_last_allotment(void);
-void print_rooms(void);
-
-/* Module 3 */
-void enqueue_waiting(int studentIndex);
-int dequeue_waiting(void);
-int is_in_waiting_list(int studentIndex);
-void complaint_enqueue(Complaint c);
-Complaint complaint_dequeue(void);
-const char* priority_name(Priority p);
-void record_cleaning(int studentIndex);
-void print_cleaning_record(int roomNo);
-
-/* Module 4 */
-void log_gate_entry(int studentIndex, const char* type, time_t timestamp);
-void print_gate_log_recent_first(int studentIndex);
-void going_out(int studentIndex);
-void coming_in(int studentIndex);
-void print_students_outside(void);
-void initialize_staff(void);
-int find_staff(int staffId);
-void assign_staff_to_floor(int floor, int staffId);
-void remove_staff_from_floor(int floor, int staffId);
-void print_floor_duty(int floor);
-
-/* Module 5 */
-int hash_function(const char* rollNo);
-void hash_insert(const char* rollNo, int studentIndex);
-int hash_lookup(const char* rollNo);
-
-/* Module 6 */
-typedef struct AVLNode AVLNode;
-AVLNode* avl_insert(AVLNode* root, int studentIndex);
-void avl_inorder(AVLNode* root);
-
-/* Module 7 */
-void build_floor_graph(void);
-void add_corridor(int a, int b, int distance);
-int room_to_node(int roomNo);
-void bfs_nearest_exit(int startNode);
-void dijkstra_nearest_exit(int startNode);
-
-/* Module 8 */
-void insertion_sort_students(Student a[], int n);
-void merge_sort_students(Student a[], Student temp[], int left, int right);
-void merge(Student a[], Student temp[], int left, int mid, int right);
-void compare_sorts(void);
-
-void free_all(void);
-
-
-/* ================================================================
-   INPUT / UTILITY HELPERS
-   ================================================================
-   Everything is read a whole line at a time with fgets(). Plain
-   scanf("%d") loops forever if the user types a letter, because
-   the bad character is never consumed.
-*/
-
-void read_line(const char* prompt, char* buf, int size)
+/* Current date and time as text, e.g. "12-10 09:30 PM" */
+void getTime(char *buf)
 {
-    printf("%s", prompt);
+    time_t now = time(NULL);
+    strftime(buf, 20, "%d-%m %I:%M %p", localtime(&now));
+}
 
+void freeMemory(void);          /* defined at the end, frees all linked nodes */
+
+/* Throw away the rest of the current input line */
+void clearLine(void)
+{
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF)
+        ;
+}
+
+/* Stop the program cleanly when input ends (Ctrl+D / end of file) */
+void inputEnded(void)
+{
+    printf("\nInput ended.\n");
+    freeMemory();
+    exit(0);
+}
+
+/* Read one line of text (spaces allowed) into buf */
+void readText(char *buf, int size)
+{
     if (fgets(buf, size, stdin) == NULL)
-    {
-        printf("\nInput closed. Exiting.\n");
-        free_all();
-        exit(0);
-    }
+        inputEnded();
 
-    /* Drop a UTF-8 byte-order mark (PowerShell pipes / Notepad files) */
-    if ((unsigned char)buf[0] == 0xEF && (unsigned char)buf[1] == 0xBB &&
-        (unsigned char)buf[2] == 0xBF)
-    {
-        memmove(buf, buf + 3, strlen(buf + 3) + 1);
-    }
-
-    size_t len = strlen(buf);
-
+    int len = strlen(buf);
     if (len > 0 && buf[len - 1] == '\n')
-    {
-        buf[--len] = '\0';
-
-        /* Windows line ending "\r\n" */
-        if (len > 0 && buf[len - 1] == '\r')
-        {
-            buf[--len] = '\0';
-        }
-    }
+        buf[len - 1] = '\0';            /* remove the Enter key */
     else
-    {
-        /* Line was longer than buf: discard the rest of it */
-        int c;
-        while ((c = getchar()) != '\n' && c != EOF)
-            ;
-    }
+        clearLine();                     /* line was too long: drop the rest */
 }
 
-
-int read_int(const char* prompt)
+/* Read a whole number. If letters are typed, ask again. */
+int readInt(void)
 {
-    char buf[64];
-
-    while (1)
-    {
-        read_line(prompt, buf, sizeof buf);
-
-        char* end;
-        long value = strtol(buf, &end, 10);
-
-        if (end != buf)
-        {
-            while (*end == ' ' || *end == '\t')
-            {
-                end++;
-            }
-
-            if (*end == '\0')
-            {
-                return (int)value;
-            }
-        }
-
-        printf("Please enter a valid number.\n");
-    }
-}
-
-
-int read_int_range(const char* prompt, int min, int max)
-{
-    while (1)
-    {
-        int value = read_int(prompt);
-
-        if (value >= min && value <= max)
-        {
-            return value;
-        }
-
-        printf("Please enter a number from %d to %d.\n", min, max);
-    }
-}
-
-
-/* Returns 1 for y/Y, 0 for n/N; asks again otherwise */
-int read_yes_no(const char* prompt)
-{
-    char buf[16];
-
-    while (1)
-    {
-        read_line(prompt, buf, sizeof buf);
-
-        if ((buf[0] == 'y' || buf[0] == 'Y') && buf[1] == '\0')
-        {
-            return 1;
-        }
-
-        if ((buf[0] == 'n' || buf[0] == 'N') && buf[1] == '\0')
-        {
-            return 0;
-        }
-
-        printf("Please enter y or n.\n");
-    }
-}
-
-
-/*
-   Roll numbers look like "N254": one or more letters followed by
-   one or more digits. Stored in uppercase.
-*/
-void read_roll(const char* prompt, char* roll)
-{
-    char buf[64];
-
-    while (1)
-    {
-        read_line(prompt, buf, sizeof buf);
-
-        int i = 0;
-
-        while (isalpha((unsigned char)buf[i]))
-        {
-            buf[i] = (char)toupper((unsigned char)buf[i]);
-            i++;
-        }
-
-        int letters = i;
-
-        while (isdigit((unsigned char)buf[i]))
-        {
-            i++;
-        }
-
-        if (letters > 0 && i > letters && buf[i] == '\0' && i < ROLL_LEN)
-        {
-            strcpy(roll, buf);
-            return;
-        }
-
-        printf("Roll no must look like N254 (letters then digits).\n");
-    }
-}
-
-
-void read_phone(const char* prompt, char* phone)
-{
-    char buf[64];
-
-    while (1)
-    {
-        read_line(prompt, buf, sizeof buf);
-
-        int ok = (strlen(buf) == PHONE_LEN - 1);
-
-        for (int i = 0; ok && buf[i] != '\0'; i++)
-        {
-            if (!isdigit((unsigned char)buf[i]))
-            {
-                ok = 0;
-            }
-        }
-
-        if (ok)
-        {
-            strcpy(phone, buf);
-            return;
-        }
-
-        printf("Phone number must be exactly 10 digits.\n");
-    }
-}
-
-
-/*
-   Compare roll numbers: letter part alphabetically, then number
-   part numerically, so N9 < N10 < N254 (plain strcmp would put
-   "N10" before "N9").
-
-   Returns <0, 0 or >0 like strcmp.
-*/
-int compare_roll(const char* a, const char* b)
-{
-    int i = 0;
-
-    while (isalpha((unsigned char)a[i]) && a[i] == b[i])
-    {
-        i++;
-    }
-
-    if (isalpha((unsigned char)a[i]) || isalpha((unsigned char)b[i]))
-    {
-        return (unsigned char)a[i] - (unsigned char)b[i];
-    }
-
-    long na = atol(a + i);
-    long nb = atol(b + i);
-
-    return (na > nb) - (na < nb);
-}
-
-
-void format_time(time_t t, char* buf, int size)
-{
-    strftime(buf, size, "%d-%m-%Y %I:%M %p", localtime(&t));
-}
-
-
-/* Current month as YYYYMM, e.g. 202610 */
-int current_month(void)
-{
-    time_t now = time(NULL);
-    struct tm* t = localtime(&now);
-
-    return (t->tm_year + 1900) * 100 + (t->tm_mon + 1);
-}
-
-
-int same_day(time_t a, time_t b)
-{
-    struct tm ta = *localtime(&a);
-    struct tm tb = *localtime(&b);
-
-    return ta.tm_year == tb.tm_year && ta.tm_yday == tb.tm_yday;
-}
-
-
-/* ================================================================
-   MODULE 1: ARRAYS + SEARCH
-   ================================================================ */
-
-/*
-   rollOrder[] holds indices into students[], kept sorted by roll
-   number. A new student is placed in its correct slot by shifting
-   larger entries one place right (array insertion), so binary
-   search always works no matter what order students register in.
-*/
-int rollOrder[MAX_STUDENTS];
-
-
-/*
-   Add a student to the students array, then index them in the
-   roll-number order and the hash table.
-
-   Returns:
-   1 -> student successfully added
-   0 -> student not added
-*/
-int add_student(Student s)
-{
-    /* Check for duplicate roll number */
-    if (hash_lookup(s.rollNo) != -1)
-    {
-        printf("Student with roll number %s already exists.\n",
-               s.rollNo);
-        return 0;
-    }
-
-    /* Check array capacity */
-    if (studentCount >= MAX_STUDENTS)
-    {
-        printf("Student limit reached.\n");
-        return 0;
-    }
-
-    /* Add student */
-    int index = studentCount;
-    students[index] = s;
-
-    /* Array insertion into rollOrder[] - O(n) shifting */
-    int i = studentCount - 1;
-
-    while (i >= 0 && compare_roll(students[rollOrder[i]].rollNo, s.rollNo) > 0)
-    {
-        rollOrder[i + 1] = rollOrder[i];
-        i--;
-    }
-
-    rollOrder[i + 1] = index;
-
-    studentCount++;
-
-    hash_insert(s.rollNo, index);
-
-    return 1;
-}
-
-
-/*
-   Linear Search
-
-   Searches every student one by one.
-
-   Returns:
-   index -> if student is found
-   -1    -> if student is not found
-
-   Time Complexity: O(n)
-*/
-int linear_search_student(const char* rollNo)
-{
-    for (int i = 0; i < studentCount; i++)
-    {
-        if (strcmp(students[i].rollNo, rollNo) == 0)
-        {
-            return i;
-        }
-    }
-
-    return -1;
-}
-
-
-/*
-   Binary Search
-
-   Searches rollOrder[], which is always sorted by roll number.
-
-   Returns:
-   index into students[] -> if student is found
-   -1                    -> if student is not found
-
-   Time Complexity: O(log n)
-*/
-int binary_search_student(const char* rollNo)
-{
-    int left = 0;
-    int right = studentCount - 1;
-
-    while (left <= right)
-    {
-        int mid = left + (right - left) / 2;
-        int cmp = compare_roll(students[rollOrder[mid]].rollNo, rollNo);
-
-        /* Student found */
-        if (cmp == 0)
-        {
-            return rollOrder[mid];
-        }
-
-        /* Search right half */
-        if (cmp < 0)
-        {
-            left = mid + 1;
-        }
-
-        /* Search left half */
-        else
-        {
-            right = mid - 1;
-        }
-    }
-
-    return -1;
-}
-
-
-/* Defined in Module 4 */
-int is_outside(int studentIndex);
-
-
-void print_student(int index)
-{
-    if (index == -1)
-    {
-        printf("Student not found.\n");
-        return;
-    }
-
-    Student* s = &students[index];
-
-    printf("Student found!\n");
-    printf("Roll no:        %s\n", s->rollNo);
-    printf("Name:           %s\n", s->name);
-    printf("Phone:          %s\n", s->phone);
-    printf("Parent phone 1: %s\n", s->parentPhone1);
-    printf("Parent phone 2: %s\n", s->parentPhone2);
-
-    if (s->roomNo == 0)
-    {
-        printf("Room:           not allotted\n");
-    }
-    else
-    {
-        printf("Room:           %d\n", s->roomNo);
-    }
-
-    printf("Hostel fee:     %s\n", s->hostelFeePaid ? "paid" : "PENDING");
-    printf("Laundry:        %s this month\n",
-           s->laundryMonth == current_month() ? "active" : "not taken");
-    printf("Currently:      %s\n", is_outside(index) ? "OUTSIDE campus" : "in hostel");
-}
-
-
-/* ================================================================
-   MODULE 2: STACK + ROOM ALLOTMENT + UNDO
-   ================================================================ */
-
-/*
-   Each stack entry stores one room allotment action.
-*/
-typedef struct
-{
-    int studentIndex;
-    int previousRoomNo;
-} AllotmentAction;
-
-
-/*
-   Undo Stack
-
-   undoTop = -1 means stack is empty.
-*/
-AllotmentAction undoStack[MAX_UNDO];
-
-int undoTop = -1;
-
-
-/*
-   Initialize hostel rooms.
-
-   Floors 1-3 (ground floor has no student rooms), 4 rooms per
-   floor: 101-104, 201-204, 301-304. Each room has 4 beds.
-*/
-void initialize_rooms(void)
-{
-    roomCount = 0;
-
-    for (int f = 1; f <= NUM_FLOORS; f++)
-    {
-        for (int r = 1; r <= ROOMS_PER_FLOOR; r++)
-        {
-            rooms[roomCount].roomNo = f * 100 + r;
-            rooms[roomCount].capacity = ROOM_CAPACITY;
-            rooms[roomCount].occupied = 0;
-            rooms[roomCount].floor = f;
-            roomCount++;
-        }
-    }
-}
-
-
-/*
-   Find a room using its room number.
-
-   Returns:
-   index -> if room is found
-   -1    -> if room is not found
-*/
-int find_room(int roomNo)
-{
-    for (int i = 0; i < roomCount; i++)
-    {
-        if (rooms[i].roomNo == roomNo)
-        {
-            return i;
-        }
-    }
-
-    return -1;
-}
-
-
-/*
-   First room that still has a free bed, or -1 if all are full.
-*/
-int find_free_room(void)
-{
-    for (int i = 0; i < roomCount; i++)
-    {
-        if (rooms[i].occupied < rooms[i].capacity)
-        {
-            return i;
-        }
-    }
-
-    return -1;
-}
-
-
-void print_rooms(void)
-{
-    printf("Room  Floor  Beds taken  Students\n");
-
-    for (int i = 0; i < roomCount; i++)
-    {
-        printf("%-5d %-6d %d/%d         ", rooms[i].roomNo, rooms[i].floor,
-               rooms[i].occupied, rooms[i].capacity);
-
-        for (int j = 0; j < studentCount; j++)
-        {
-            if (students[j].roomNo == rooms[i].roomNo)
-            {
-                printf("%s ", students[j].rollNo);
-            }
-        }
-
-        printf("\n");
-    }
-}
-
-
-/*
-   Push an allotment action onto the undo stack.
-
-   Stack follows LIFO:
-   Last In -> First Out
-*/
-void push_undo(int studentIndex, int previousRoomNo)
-{
-    /* Check stack overflow */
-    if (undoTop >= MAX_UNDO - 1)
-    {
-        printf("Undo stack is full.\n");
-        return;
-    }
-
-    /* Move top upward */
-    undoTop++;
-
-    /* Store action */
-    undoStack[undoTop].studentIndex = studentIndex;
-    undoStack[undoTop].previousRoomNo = previousRoomNo;
-}
-
-
-/*
-   Allot a room to a student.
-
-   Returns:
-   1 -> room allotted
-   0 -> not allotted
-*/
-int allot_room(int studentIndex, int roomNo)
-{
-    /* Find room */
-    int roomIndex = find_room(roomNo);
-
-    if (roomIndex == -1)
-    {
-        printf("Room not found.\n");
-        return 0;
-    }
-
-
-    /* Check whether student already has a room */
-    if (students[studentIndex].roomNo != 0)
-    {
-        printf("%s already has Room %d.\n", students[studentIndex].name,
-               students[studentIndex].roomNo);
-
-        return 0;
-    }
-
-
-    /* Check room capacity */
-    if (rooms[roomIndex].occupied >=
-        rooms[roomIndex].capacity)
-    {
-        printf("Room %d is full.\n", roomNo);
-
-        return 0;
-    }
-
-
-    /*
-       Save previous state before making the change.
-
-       Currently previousRoomNo will normally be 0,
-       because students without a room have roomNo = 0.
-    */
-    push_undo(
-        studentIndex,
-        students[studentIndex].roomNo
-    );
-
-
-    /* Allot room */
-    students[studentIndex].roomNo = roomNo;
-
-    /* Increase room occupancy */
-    rooms[roomIndex].occupied++;
-
-    printf("Room %d allotted to %s (%s). Beds taken: %d/%d.\n", roomNo,
-           students[studentIndex].name, students[studentIndex].rollNo,
-           rooms[roomIndex].occupied, rooms[roomIndex].capacity);
-
-    return 1;
-}
-
-
-/*
-   Undo the most recent room allotment.
-
-   This demonstrates STACK LIFO behavior.
-
-   Example:
-
-   Allot 101
-   Allot 102
-   Allot 103
-
-   Undo -> 103 is removed first.
-*/
-void undo_last_allotment(void)
-{
-    /* Check whether stack is empty */
-    if (undoTop == -1)
-    {
-        printf("Nothing to undo.\n");
-        return;
-    }
-
-
-    /* Get the top stack entry */
-    AllotmentAction action = undoStack[undoTop];
-
-    int studentIndex = action.studentIndex;
-
-
-    /* Get student's current room */
-    int currentRoom =
-        students[studentIndex].roomNo;
-
-
-    /* Find current room */
-    int roomIndex =
-        find_room(currentRoom);
-
-
-    /* Decrease room occupancy */
-    if (roomIndex != -1 &&
-        rooms[roomIndex].occupied > 0)
-    {
-        rooms[roomIndex].occupied--;
-    }
-
-
-    /* Restore previous room */
-    students[studentIndex].roomNo =
-        action.previousRoomNo;
-
-
-    /* Pop the stack */
-    undoTop--;
-
-
-    printf("Undone: Room %d allotment for %s.\n",
-           currentRoom, students[studentIndex].rollNo);
-}
-
-
-/* ================================================================
-   MODULE 3: QUEUES - WAITING LIST, COMPLAINTS, CLEANING RECORD
-   ================================================================ */
-
-/* ---- Circular queue: room allotment waiting list ---- */
-
-int waitingList[MAX_STUDENTS];   /* student indices */
-int wlFront = 0, wlRear = -1, wlCount = 0;
-
-
-void enqueue_waiting(int studentIndex)
-{
-    if (wlCount >= MAX_STUDENTS)
-    {
-        printf("Waiting list is full.\n");
-        return;
-    }
-
-    wlRear = (wlRear + 1) % MAX_STUDENTS;
-    waitingList[wlRear] = studentIndex;
-    wlCount++;
-
-    printf("%s added to waiting list (position %d).\n",
-           students[studentIndex].rollNo, wlCount);
-}
-
-
-/*
-   Returns the student index at the front, or -1 if the queue is
-   empty.
-*/
-int dequeue_waiting(void)
-{
-    if (wlCount == 0)
-    {
-        return -1;
-    }
-
-    int studentIndex = waitingList[wlFront];
-    wlFront = (wlFront + 1) % MAX_STUDENTS;
-    wlCount--;
-
-    return studentIndex;
-}
-
-
-/*
-   Walk the circular queue from front to rear.
-*/
-int is_in_waiting_list(int studentIndex)
-{
-    for (int i = 0; i < wlCount; i++)
-    {
-        if (waitingList[(wlFront + i) % MAX_STUDENTS] == studentIndex)
-        {
-            return 1;
-        }
-    }
-
-    return 0;
-}
-
-
-/* ---- Priority queue: complaints by urgency (binary min-heap) ----
-   A burst pipe (HIGH) is handled before a flickering bulb (LOW)
-   even if the bulb was reported first. The heap is ordered by
-   (priority, complaintId), so complaints of equal priority are
-   handled in the order they were filed.
-
-   Array form of a complete binary tree:
-     parent(i) = (i - 1) / 2, children = 2i + 1 and 2i + 2
-   Insert and remove are O(log n), versus O(n) shifting in a
-   sorted array.
-*/
-
-Complaint complaintHeap[MAX_COMPLAINTS];
-int complaintCount = 0;
-int nextComplaintId = 1;
-
-
-/* Does a belong ABOVE b in the heap? (more urgent, or filed earlier) */
-int complaint_above(const Complaint* a, const Complaint* b)
-{
-    return (a->priority != b->priority)
-               ? a->priority < b->priority
-               : a->complaintId < b->complaintId;
-}
-
-
-void swap_complaints(Complaint* a, Complaint* b)
-{
-    Complaint t = *a;
-    *a = *b;
-    *b = t;
-}
-
-
-/* Heapify: push heap[i] down until both children are below it */
-void heapify(Complaint heap[], int n, int i)
-{
-    while (1)
-    {
-        int top = i;
-        int left = 2 * i + 1;
-        int right = 2 * i + 2;
-
-        if (left < n && complaint_above(&heap[left], &heap[top]))
-        {
-            top = left;
-        }
-
-        if (right < n && complaint_above(&heap[right], &heap[top]))
-        {
-            top = right;
-        }
-
-        if (top == i)
-        {
-            return;
-        }
-
-        swap_complaints(&heap[i], &heap[top]);
-        i = top;
-    }
-}
-
-
-void complaint_enqueue(Complaint c)
-{
-    if (complaintCount >= MAX_COMPLAINTS)
-    {
-        printf("Complaint queue is full.\n");
-        return;
-    }
-
-    /* Add at the end, then sift up past less urgent parents */
-    int i = complaintCount++;
-    complaintHeap[i] = c;
-
-    while (i > 0 && complaint_above(&complaintHeap[i], &complaintHeap[(i - 1) / 2]))
-    {
-        swap_complaints(&complaintHeap[i], &complaintHeap[(i - 1) / 2]);
-        i = (i - 1) / 2;
-    }
-
-    printf("Complaint #%d filed. %d complaint(s) pending.\n",
-           c.complaintId, complaintCount);
-}
-
-
-/*
-   Remove the root (most urgent). Move the last item to the root
-   and heapify down. Caller must check complaintCount > 0 first.
-*/
-Complaint complaint_dequeue(void)
-{
-    Complaint c = complaintHeap[0];
-
-    complaintHeap[0] = complaintHeap[--complaintCount];
-    heapify(complaintHeap, complaintCount, 0);
-
-    return c;
-}
-
-
-
-const char* priority_name(Priority p)
-{
-    switch (p)
-    {
-        case COMP_HIGH:   return "HIGH";
-        case COMP_MEDIUM: return "MEDIUM";
-        default:          return "LOW";
-    }
-}
-
-
-/* ---- Linked-list queue: daily room cleaning record ----
-   Every day a student of the room confirms whether the cleaner
-   came: sweeping only, or sweeping + mopping (due twice a week).
-   Each room's record is a queue built from a linked list: new
-   records join at the rear, and once CLEAN_HISTORY records are
-   kept the oldest is dequeued from the front.
-*/
-
-typedef enum {
-    CLEAN_NOT_DONE = 0,
-    CLEAN_SWEEP = 1,
-    CLEAN_SWEEP_MOP = 2
-} CleanType;
-
-typedef struct CleanNode {
-    time_t date;
-    CleanType type;
-    int studentIndex;            /* who confirmed it */
-    struct CleanNode* next;
-} CleanNode;
-
-CleanNode* cleanFront[MAX_ROOMS];
-CleanNode* cleanRear[MAX_ROOMS];
-int cleanCount[MAX_ROOMS];
-
-
-const char* clean_name(CleanType t)
-{
-    switch (t)
-    {
-        case CLEAN_SWEEP:     return "Sweeping";
-        case CLEAN_SWEEP_MOP: return "Sweeping + Mopping";
-        default:              return "NOT cleaned";
-    }
-}
-
-
-void clean_enqueue(int roomIndex, CleanNode* node)
-{
-    node->next = NULL;
-
-    if (cleanRear[roomIndex] == NULL)
-    {
-        cleanFront[roomIndex] = node;    /* empty queue */
-    }
-    else
-    {
-        cleanRear[roomIndex]->next = node;
-    }
-
-    cleanRear[roomIndex] = node;
-    cleanCount[roomIndex]++;
-
-    if (cleanCount[roomIndex] > CLEAN_HISTORY)
-    {
-        /* Dequeue the oldest record */
-        CleanNode* old = cleanFront[roomIndex];
-        cleanFront[roomIndex] = old->next;
-        free(old);
-        cleanCount[roomIndex]--;
-    }
-}
-
-
-void record_cleaning(int studentIndex)
-{
-    int roomIndex = find_room(students[studentIndex].roomNo);
-
-    if (roomIndex == -1)
-    {
-        printf("%s has no room allotted.\n", students[studentIndex].name);
-        return;
-    }
-
-    time_t now = time(NULL);
-
-    if (cleanRear[roomIndex] != NULL && same_day(cleanRear[roomIndex]->date, now))
-    {
-        printf("Today's cleaning for Room %d is already recorded (%s).\n",
-               rooms[roomIndex].roomNo, clean_name(cleanRear[roomIndex]->type));
-        return;
-    }
-
-    int came = read_int_range("Did the cleaner come and clean your room today? (1 = Yes, 2 = No): ", 1, 2);
-
-    CleanType type = CLEAN_NOT_DONE;
-
-    if (came == 1)
-    {
-        type = (CleanType)read_int_range("What was done? (1 = Sweeping only, 2 = Sweeping + Mopping): ", 1, 2);
-    }
-
-    CleanNode* node = malloc(sizeof(CleanNode));
-
-    if (node == NULL)
-    {
-        printf("Out of memory.\n");
-        return;
-    }
-
-    node->date = now;
-    node->type = type;
-    node->studentIndex = studentIndex;
-
-    clean_enqueue(roomIndex, node);
-
-    printf("Recorded for Room %d: %s.\n", rooms[roomIndex].roomNo, clean_name(type));
-}
-
-
-/* Walk the queue front to rear, then summarise the last 7 days */
-void print_cleaning_record(int roomNo)
-{
-    int roomIndex = find_room(roomNo);
-
-    if (roomIndex == -1)
-    {
-        printf("Room not found.\n");
-        return;
-    }
-
-    if (cleanFront[roomIndex] == NULL)
-    {
-        printf("No cleaning records for Room %d.\n", roomNo);
-        return;
-    }
-
-    printf("Cleaning record for Room %d (oldest first):\n", roomNo);
-
-    time_t now = time(NULL);
-    int swept = 0, mopped = 0, missed = 0;
-    char when[32];
-
-    for (CleanNode* p = cleanFront[roomIndex]; p != NULL; p = p->next)
-    {
-        strftime(when, sizeof when, "%a %d-%m-%Y", localtime(&p->date));
-        printf("  %s  %-20s (confirmed by %s)\n", when, clean_name(p->type),
-               students[p->studentIndex].rollNo);
-
-        if (difftime(now, p->date) < 7 * 24 * 60 * 60)
-        {
-            if (p->type == CLEAN_SWEEP)          swept++;
-            else if (p->type == CLEAN_SWEEP_MOP) mopped++;
-            else                                 missed++;
-        }
-    }
-
-    printf("Last 7 days: %d sweeping only, %d sweeping + mopping, %d not cleaned.\n",
-           swept, mopped, missed);
-
-    if (mopped < 2)
-    {
-        printf("Note: mopping is due twice a week (%d done).\n", mopped);
-    }
-}
-
-
-/* ================================================================
-   MODULE 4: LINKED LISTS - GATE LOG, STUDENTS OUTSIDE, DUTY ROSTER
-   ================================================================ */
-
-/* ---- Doubly linked list: per-student gate entry/exit history ----
-   Doubly linked so the warden can walk backwards from the most
-   recent entry - "when did this student last leave?"
-*/
-
-typedef struct GateNode {
-    char type[4];        /* "IN" or "OUT" */
-    time_t timestamp;
-    struct GateNode* prev;
-    struct GateNode* next;
-} GateNode;
-
-GateNode* gateHead[MAX_STUDENTS];
-GateNode* gateTail[MAX_STUDENTS];
-
-
-void log_gate_entry(int studentIndex, const char* type, time_t timestamp)
-{
-    GateNode* node = malloc(sizeof(GateNode));
-
-    if (node == NULL)
-    {
-        printf("Out of memory.\n");
-        return;
-    }
-
-    strncpy(node->type, type, sizeof node->type - 1);
-    node->type[sizeof node->type - 1] = '\0';
-    node->timestamp = timestamp;
-    node->next = NULL;
-    node->prev = gateTail[studentIndex];
-
-    if (gateHead[studentIndex] == NULL)
-    {
-        /* Empty list: node is both head and tail */
-        gateHead[studentIndex] = node;
-    }
-    else
-    {
-        gateTail[studentIndex]->next = node;
-    }
-
-    gateTail[studentIndex] = node;
-}
-
-
-void print_gate_log_recent_first(int studentIndex)
-{
-    if (gateTail[studentIndex] == NULL)
-    {
-        printf("No gate entries for %s.\n", students[studentIndex].name);
-        return;
-    }
-
-    printf("Gate log for %s (%s), most recent first:\n",
-           students[studentIndex].name, students[studentIndex].rollNo);
-
-    char when[32];
-
-    for (GateNode* p = gateTail[studentIndex]; p != NULL; p = p->prev)
-    {
-        format_time(p->timestamp, when, sizeof when);
-        printf("  %-4s %s\n", p->type, when);
-    }
-}
-
-
-/* ---- Doubly linked list: students currently outside campus ----
-   The warden's office list. Going OUT appends a node at the tail.
-   Coming IN removes that student's node - outNodeOf[] remembers
-   where it is, and prev/next pointers let us unlink it in O(1)
-   without searching the list.
-*/
-
-typedef struct OutNode {
-    int studentIndex;
-    time_t outTime;
-    struct OutNode* prev;
-    struct OutNode* next;
-} OutNode;
-
-OutNode* outHead = NULL;
-OutNode* outTail = NULL;
-OutNode* outNodeOf[MAX_STUDENTS];
-int outsideCount = 0;
-
-
-int is_outside(int studentIndex)
-{
-    return outNodeOf[studentIndex] != NULL;
-}
-
-
-/* Gate is closed from curfew until GATE_OPEN_HOUR in the morning */
-int gate_closed(void)
-{
-    time_t now = time(NULL);
-    struct tm* t = localtime(&now);
-
-    return t->tm_hour >= curfewHour || t->tm_hour < GATE_OPEN_HOUR;
-}
-
-
-void going_out(int studentIndex)
-{
-    Student* s = &students[studentIndex];
-
-    if (is_outside(studentIndex))
-    {
-        printf("%s is already outside campus.\n", s->name);
-        return;
-    }
-
-    if (gate_closed())
-    {
-        printf("Gate is closed (curfew %d PM - %d AM). Cannot go out.\n",
-               curfewHour - 12, GATE_OPEN_HOUR);
-        return;
-    }
-
-    OutNode* node = malloc(sizeof(OutNode));
-
-    if (node == NULL)
-    {
-        printf("Out of memory.\n");
-        return;
-    }
-
-    time_t now = time(NULL);
-
-    node->studentIndex = studentIndex;
-    node->outTime = now;
-    node->next = NULL;
-    node->prev = outTail;
-
-    if (outHead == NULL)
-    {
-        outHead = node;
-    }
-    else
-    {
-        outTail->next = node;
-    }
-
-    outTail = node;
-    outNodeOf[studentIndex] = node;
-    outsideCount++;
-
-    log_gate_entry(studentIndex, "OUT", now);
-
-    char when[32];
-    format_time(now, when, sizeof when);
-
-    printf("Recorded at warden's office - going OUT at %s:\n", when);
-    printf("  %s (%s), phone %s, parents %s / %s\n", s->name, s->rollNo,
-           s->phone, s->parentPhone1, s->parentPhone2);
-    printf("  Must be back before %d PM.\n", curfewHour - 12);
-}
-
-
-void coming_in(int studentIndex)
-{
-    OutNode* node = outNodeOf[studentIndex];
-
-    if (node == NULL)
-    {
-        printf("%s is not marked as outside.\n", students[studentIndex].name);
-        return;
-    }
-
-    if (gate_closed())
-    {
-        printf("No entry after %d PM. Gate opens at %d AM.\n",
-               curfewHour - 12, GATE_OPEN_HOUR);
-        return;
-    }
-
-    /* Unlink in O(1) using prev/next */
-    if (node->prev == NULL)
-    {
-        outHead = node->next;
-    }
-    else
-    {
-        node->prev->next = node->next;
-    }
-
-    if (node->next == NULL)
-    {
-        outTail = node->prev;
-    }
-    else
-    {
-        node->next->prev = node->prev;
-    }
-
-    free(node);
-    outNodeOf[studentIndex] = NULL;
-    outsideCount--;
-
-    log_gate_entry(studentIndex, "IN", time(NULL));
-
-    printf("%s (%s) is back in the hostel.\n", students[studentIndex].name,
-           students[studentIndex].rollNo);
-}
-
-
-/* Warden's office view: everyone outside, earliest to leave first */
-void print_students_outside(void)
-{
-    if (outHead == NULL)
-    {
-        printf("All students are in the hostel.\n");
-        return;
-    }
-
-    printf("%d student(s) outside campus:\n", outsideCount);
-    printf("%-6s %-20s %-5s %-11s %-11s %-11s %s\n", "Roll", "Name", "Room",
-           "Phone", "Parent 1", "Parent 2", "Went out");
-
-    char when[32];
-
-    for (OutNode* p = outHead; p != NULL; p = p->next)
-    {
-        Student* s = &students[p->studentIndex];
-        format_time(p->outTime, when, sizeof when);
-
-        printf("%-6s %-20s %-5d %-11s %-11s %-11s %s\n", s->rollNo, s->name,
-               s->roomNo, s->phone, s->parentPhone1, s->parentPhone2, when);
-    }
-}
-
-
-/* ---- Singly linked list: staff duty roster per floor ----
-   Floors gain/lose staff dynamically, so a linked list beats a
-   fixed array here.
-*/
-
-typedef struct DutyNode {
-    int staffId;
-    struct DutyNode* next;
-} DutyNode;
-
-DutyNode* floorDuty[NUM_FLOORS + 1];    /* floorDuty[f] = staff on floor f */
-
-
-const char* role_name(StaffRole r)
-{
-    switch (r)
-    {
-        case ROLE_SWEEPER:     return "Sweeper";
-        case ROLE_ELECTRICIAN: return "Electrician";
-        case ROLE_PLUMBER:     return "Plumber";
-        default:               return "Security";
-    }
-}
-
-
-void add_staff(int staffId, const char* name, StaffRole role)
-{
-    if (staffCount >= MAX_STAFF)
-    {
-        return;
-    }
-
-    staff[staffCount].staffId = staffId;
-    strncpy(staff[staffCount].name, name, MAX_NAME - 1);
-    staff[staffCount].name[MAX_NAME - 1] = '\0';
-    staff[staffCount].role = role;
-    staff[staffCount].assignedFloor = 0;
-    staffCount++;
-}
-
-
-void initialize_staff(void)
-{
-    add_staff(1, "Ramesh", ROLE_SWEEPER);
-    add_staff(2, "Suresh", ROLE_SWEEPER);
-    add_staff(3, "Mahesh", ROLE_ELECTRICIAN);
-    add_staff(4, "Dinesh", ROLE_PLUMBER);
-    add_staff(5, "Prakash", ROLE_SECURITY);
-    add_staff(6, "Ganesh", ROLE_SECURITY);
-}
-
-
-int find_staff(int staffId)
-{
-    for (int i = 0; i < staffCount; i++)
-    {
-        if (staff[i].staffId == staffId)
-        {
-            return i;
-        }
-    }
-
-    return -1;
-}
-
-
-void print_staff_list(void)
-{
-    printf("ID  Name        Role         Floor\n");
-
-    for (int i = 0; i < staffCount; i++)
-    {
-        printf("%-3d %-11s %-12s ", staff[i].staffId, staff[i].name,
-               role_name(staff[i].role));
-
-        if (staff[i].assignedFloor == 0)
-        {
-            printf("-\n");
-        }
-        else
-        {
-            printf("%d\n", staff[i].assignedFloor);
-        }
-    }
-}
-
-
-/*
-   Prepend to floorDuty[floor] - O(1) insert, no list walk.
-   A staff member is on one floor at a time, so assigning them
-   elsewhere first removes them from their old floor.
-*/
-void assign_staff_to_floor(int floor, int staffId)
-{
-    int s = find_staff(staffId);
-
-    if (s == -1)
-    {
-        printf("Staff ID %d not found.\n", staffId);
-        return;
-    }
-
-    if (staff[s].assignedFloor == floor)
-    {
-        printf("%s is already on floor %d.\n", staff[s].name, floor);
-        return;
-    }
-
-    if (staff[s].assignedFloor != 0)
-    {
-        remove_staff_from_floor(staff[s].assignedFloor, staffId);
-    }
-
-    DutyNode* node = malloc(sizeof(DutyNode));
-
-    if (node == NULL)
-    {
-        printf("Out of memory.\n");
-        return;
-    }
-
-    node->staffId = staffId;
-    node->next = floorDuty[floor];
-    floorDuty[floor] = node;
-
-    staff[s].assignedFloor = floor;
-
-    printf("%s (%s) assigned to floor %d.\n", staff[s].name,
-           role_name(staff[s].role), floor);
-}
-
-
-/*
-   Unlink and free the node with matching staffId.
-   Head node is a special case: floorDuty[floor] itself changes.
-*/
-void remove_staff_from_floor(int floor, int staffId)
-{
-    DutyNode* curr = floorDuty[floor];
-    DutyNode* prev = NULL;
-
-    while (curr != NULL && curr->staffId != staffId)
-    {
-        prev = curr;
-        curr = curr->next;
-    }
-
-    if (curr == NULL)
-    {
-        printf("Staff ID %d is not on floor %d.\n", staffId, floor);
-        return;
-    }
-
-    if (prev == NULL)
-    {
-        floorDuty[floor] = curr->next;      /* deleting the head */
-    }
-    else
-    {
-        prev->next = curr->next;
-    }
-
-    free(curr);
-
-    int s = find_staff(staffId);
-
-    if (s != -1)
-    {
-        staff[s].assignedFloor = 0;
-        printf("%s removed from floor %d.\n", staff[s].name, floor);
-    }
-}
-
-
-void print_floor_duty(int floor)
-{
-    if (floorDuty[floor] == NULL)
-    {
-        printf("No staff on duty on floor %d.\n", floor);
-        return;
-    }
-
-    printf("Staff on duty on floor %d:\n", floor);
-
-    for (DutyNode* p = floorDuty[floor]; p != NULL; p = p->next)
-    {
-        int s = find_staff(p->staffId);
-        printf("  [%d] %s - %s\n", p->staffId, staff[s].name,
-               role_name(staff[s].role));
-    }
-}
-
-
-/* ================================================================
-   MODULE 5: HASHING - O(1) STUDENT LOOKUP
-   ================================================================
-   Map roll number -> index in students[]. Chaining handles
-   collisions.
-
-   String hash: treat the roll number as a number in base 31,
-   reduced mod HASH_SIZE at each step (Horner's method).
-   HASH_SIZE is the prime 101 so the letters and digits all
-   affect the bucket; a round size like 100 would effectively
-   look only at the last couple of characters.
-*/
-
-typedef struct HashNode {
-    char rollNo[ROLL_LEN];
-    int studentIndex;
-    struct HashNode* next;    /* chaining */
-} HashNode;
-
-HashNode* hashTable[HASH_SIZE];
-
-
-int hash_function(const char* rollNo)
-{
-    unsigned int h = 0;
-
-    for (int i = 0; rollNo[i] != '\0'; i++)
-    {
-        h = (h * 31 + (unsigned char)rollNo[i]) % HASH_SIZE;
-    }
-
-    return (int)h;
-}
-
-
-/* Insert at the HEAD of the bucket's chain - O(1) */
-void hash_insert(const char* rollNo, int studentIndex)
-{
-    HashNode* node = malloc(sizeof(HashNode));
-
-    if (node == NULL)
-    {
-        printf("Out of memory.\n");
-        return;
-    }
-
-    int bucket = hash_function(rollNo);
-
-    strcpy(node->rollNo, rollNo);
-    node->studentIndex = studentIndex;
-    node->next = hashTable[bucket];
-    hashTable[bucket] = node;
-}
-
-
-/* Returns studentIndex, or -1 if absent */
-int hash_lookup(const char* rollNo)
-{
-    for (HashNode* p = hashTable[hash_function(rollNo)]; p != NULL; p = p->next)
-    {
-        if (strcmp(p->rollNo, rollNo) == 0)
-        {
-            return p->studentIndex;
-        }
-    }
-
-    return -1;
-}
-
-
-
-/* ================================================================
-   MODULE 6: AVL TREE - HOSTEL FEE PAYMENTS
-   ================================================================
-   Hostel fee is Rs 1,00,000 per academic year, due in July. When a
-   student pays, they are inserted into a tree keyed on payment
-   time. In-order traversal lists payments in the order they were
-   made, with no sorting step. Students not in the tree are the
-   ones still pending.
-
-   Why AVL and not a plain BST: payments arrive in time order, so
-   every new key is the largest so far. A plain BST would put each
-   one to the right of the last - a "tree" of height n that is
-   really a linked list. AVL rotations keep the height ~log2(n).
-*/
-
-struct AVLNode {
-    int studentIndex;
-    int height;              /* leaf = 1 */
-    struct AVLNode* left;
-    struct AVLNode* right;
-};
-
-AVLNode* feeTreeRoot = NULL;
-int feeTreeSize = 0;
-
-
-/*
-   Order by payment time; ties broken by student index so every
-   key is unique.
-*/
-int fee_key_compare(int a, int b)
-{
-    if (students[a].feePaidOn != students[b].feePaidOn)
-    {
-        return students[a].feePaidOn < students[b].feePaidOn ? -1 : 1;
-    }
-
-    return (a > b) - (a < b);
-}
-
-
-int avl_height(AVLNode* n)
-{
-    return n == NULL ? 0 : n->height;
-}
-
-
-void avl_update_height(AVLNode* n)
-{
-    int hl = avl_height(n->left);
-    int hr = avl_height(n->right);
-
-    n->height = 1 + (hl > hr ? hl : hr);
-}
-
-
-int avl_balance(AVLNode* n)
-{
-    return n == NULL ? 0 : avl_height(n->left) - avl_height(n->right);
-}
-
-
-/*
-        y                x
-       / \              / \
-      x   C    -->     A   y
-     / \                  / \
-    A   B                B   C
-*/
-AVLNode* rotate_right(AVLNode* y)
-{
-    AVLNode* x = y->left;
-
-    y->left = x->right;
-    x->right = y;
-
-    avl_update_height(y);
-    avl_update_height(x);
-
+    int x;
+    while (scanf("%d", &x) != 1) {
+        if (feof(stdin))
+            inputEnded();
+        clearLine();
+        printf("Please enter a number: ");
+    }
+    clearLine();
     return x;
 }
 
-
-/* Mirror image of rotate_right */
-AVLNode* rotate_left(AVLNode* x)
+/* Read y or n, returns 1 for yes and 0 for no */
+int readYesNo(void)
 {
-    AVLNode* y = x->right;
-
-    x->right = y->left;
-    y->left = x;
-
-    avl_update_height(x);
-    avl_update_height(y);
-
-    return y;
+    char ans[10];
+    readText(ans, sizeof ans);
+    return ans[0] == 'y' || ans[0] == 'Y';
 }
 
 
-/*
-   After an insert or delete below this node, fix it if one side
-   is more than 1 taller than the other. The four cases:
-     LL -> rotate right          RR -> rotate left
-     LR -> rotate left at child, then right
-     RL -> rotate right at child, then left
-*/
-AVLNode* avl_rebalance(AVLNode* node)
+/* ======================= HASHING (chaining) ======================= */
+
+typedef struct HashNode {
+    int roll;
+    int index;                  /* position in students[] */
+    struct HashNode *next;
+} HashNode;
+
+HashNode *hashTable[HASH_SIZE];
+
+int hashFunction(int roll)
 {
-    avl_update_height(node);
+    return roll % HASH_SIZE;
+}
 
-    int balance = avl_balance(node);
+void hashInsert(int roll, int index)
+{
+    HashNode *node = malloc(sizeof(HashNode));
+    if (node == NULL) {
+        printf("Out of memory.\n");
+        return;
+    }
+    int b = hashFunction(roll);
 
-    if (balance > 1)
-    {
-        if (avl_balance(node->left) < 0)
-        {
-            printf("  (AVL: LR rotation)\n");
-            node->left = rotate_left(node->left);
-        }
+    node->roll = roll;
+    node->index = index;
+    node->next = hashTable[b];      /* insert at head of the chain */
+    hashTable[b] = node;
+}
+
+int hashSearch(int roll)
+{
+    if (roll <= 0)                       /* negative roll would give a negative index */
+        return -1;
+
+    HashNode *p = hashTable[hashFunction(roll)];
+
+    while (p != NULL) {
+        if (p->roll == roll)
+            return p->index;
+        p = p->next;
+    }
+    return -1;
+}
+
+
+/* ======================= LINEAR AND BINARY SEARCH ======================= */
+
+/* sortedIdx[] keeps student positions in increasing roll order,
+   so binary search works even if students register in any order. */
+int sortedIdx[MAX_STUDENTS];
+
+int linearSearch(int roll)                  /* O(n) */
+{
+    for (int i = 0; i < studentCount; i++)
+        if (students[i].roll == roll)
+            return i;
+    return -1;
+}
+
+int binarySearch(int roll)                  /* O(log n) */
+{
+    int low = 0, high = studentCount - 1;
+
+    while (low <= high) {
+        int mid = (low + high) / 2;
+        int midRoll = students[sortedIdx[mid]].roll;
+
+        if (midRoll == roll)
+            return sortedIdx[mid];
+        else if (midRoll < roll)
+            low = mid + 1;
         else
-        {
-            printf("  (AVL: LL rotation)\n");
-        }
+            high = mid - 1;
+    }
+    return -1;
+}
 
-        return rotate_right(node);
+
+/* ======================= AVL TREE - FEE PAYMENTS ======================= */
+
+typedef struct AVLNode {
+    int roll;
+    int height;
+    struct AVLNode *left, *right;
+} AVLNode;
+
+AVLNode *feeRoot = NULL;
+int feeCount = 0;
+
+int height(AVLNode *n)  { return n == NULL ? 0 : n->height; }
+int max(int a, int b)   { return a > b ? a : b; }
+
+AVLNode *newAVLNode(int roll)
+{
+    AVLNode *n = malloc(sizeof(AVLNode));
+    if (n == NULL) {
+        printf("Out of memory.\n");
+        return NULL;
+    }
+    n->roll = roll;
+    n->height = 1;
+    n->left = n->right = NULL;
+    return n;
+}
+
+AVLNode *rightRotate(AVLNode *y)
+{
+    AVLNode *x = y->left;
+    y->left = x->right;
+    x->right = y;
+    y->height = 1 + max(height(y->left), height(y->right));
+    x->height = 1 + max(height(x->left), height(x->right));
+    return x;
+}
+
+AVLNode *leftRotate(AVLNode *x)
+{
+    AVLNode *y = x->right;
+    x->right = y->left;
+    y->left = x;
+    x->height = 1 + max(height(x->left), height(x->right));
+    y->height = 1 + max(height(y->left), height(y->right));
+    return y;
+}
+
+AVLNode *avlInsert(AVLNode *node, int roll)
+{
+    if (node == NULL)
+        return newAVLNode(roll);
+
+    if (roll < node->roll)
+        node->left = avlInsert(node->left, roll);
+    else
+        node->right = avlInsert(node->right, roll);
+
+    node->height = 1 + max(height(node->left), height(node->right));
+    int balance = height(node->left) - height(node->right);
+
+    if (balance > 1 && roll < node->left->roll)          /* LL case */
+        return rightRotate(node);
+
+    if (balance < -1 && roll > node->right->roll)        /* RR case */
+        return leftRotate(node);
+
+    if (balance > 1 && roll > node->left->roll) {        /* LR case */
+        node->left = leftRotate(node->left);
+        return rightRotate(node);
     }
 
-    if (balance < -1)
-    {
-        if (avl_balance(node->right) > 0)
-        {
-            printf("  (AVL: RL rotation)\n");
-            node->right = rotate_right(node->right);
-        }
-        else
-        {
-            printf("  (AVL: RR rotation)\n");
-        }
-
-        return rotate_left(node);
+    if (balance < -1 && roll < node->right->roll) {      /* RL case */
+        node->right = rightRotate(node->right);
+        return leftRotate(node);
     }
 
     return node;
 }
 
-
-AVLNode* avl_insert(AVLNode* root, int studentIndex)
+void inorder(AVLNode *root)              /* prints in roll-number order */
 {
     if (root == NULL)
-    {
-        AVLNode* node = malloc(sizeof(AVLNode));
+        return;
+    inorder(root->left);
+    printf("  %d  %s\n", root->roll, students[hashSearch(root->roll)].name);
+    inorder(root->right);
+}
 
-        if (node == NULL)
-        {
-            printf("Out of memory.\n");
-            return NULL;
-        }
-
-        node->studentIndex = studentIndex;
-        node->height = 1;
-        node->left = NULL;
-        node->right = NULL;
-        feeTreeSize++;
-        return node;
+void showFees(void)
+{
+    if (feeRoot == NULL) {
+        printf("No payments yet.\n");
+        return;
     }
-
-    if (fee_key_compare(studentIndex, root->studentIndex) < 0)
-    {
-        root->left = avl_insert(root->left, studentIndex);
-    }
-    else
-    {
-        root->right = avl_insert(root->right, studentIndex);
-    }
-
-    return avl_rebalance(root);
+    printf("Hostel fee paid by:\n");
+    inorder(feeRoot);
+    printf("Total collected: Rs %ld  (AVL tree height = %d)\n",
+           (long)feeCount * HOSTEL_FEE, height(feeRoot));
 }
 
 
-/* In-order: left, root, right = earliest payment first */
-void avl_inorder(AVLNode* root)
+/* ======================= REGISTER STUDENT ======================= */
+
+void registerStudent(void)
 {
-    if (root == NULL)
-    {
+    Student s;
+
+    if (studentCount == MAX_STUDENTS) {
+        printf("Hostel is full.\n");
         return;
     }
 
-    avl_inorder(root->left);
+    printf("Roll no: ");
+    s.roll = readInt();
 
-    Student* s = &students[root->studentIndex];
-    char when[32];
-    format_time(s->feePaidOn, when, sizeof when);
-    printf("  %s  %-6s %s\n", when, s->rollNo, s->name);
-
-    avl_inorder(root->right);
-}
-
-
-void print_fee_payments(void)
-{
-    if (feeTreeRoot == NULL)
-    {
-        printf("No fee payments yet.\n");
+    if (s.roll <= 0) {
+        printf("Roll no must be a positive number.\n");
         return;
     }
 
-    printf("Hostel fee payments (earliest first):\n");
-    avl_inorder(feeTreeRoot);
-
-    printf("%d payment(s), Rs %ld collected. Tree height: %d "
-           "(a plain BST would have height %d).\n",
-           feeTreeSize, (long)feeTreeSize * HOSTEL_FEE,
-           avl_height(feeTreeRoot), feeTreeSize);
-}
-
-
-/* ---- Laundry: Rs 500 per month for 75 clothes ----
-   laundryMonth stores the YYYYMM the student last paid for, so
-   comparing it with current_month() resets everyone
-   automatically when a new month starts.
-*/
-
-void pay_laundry(int studentIndex)
-{
-    Student* s = &students[studentIndex];
-
-    if (s->laundryMonth == current_month())
-    {
-        printf("%s already has laundry for this month.\n", s->name);
+    if (hashSearch(s.roll) != -1) {
+        printf("Roll no %d is already registered.\n", s.roll);
         return;
     }
 
-    printf("Laundry: Rs %d for %d clothes this month.\n", LAUNDRY_FEE, LAUNDRY_CLOTHES);
-
-    if (read_int_range("Do you want to pay? (1 = Yes, 2 = No): ", 1, 2) == 1)
-    {
-        s->laundryMonth = current_month();
-        printf("Laundry active for %s this month.\n", s->name);
-    }
-    else
-    {
-        printf("Laundry not taken this month.\n");
-    }
-}
-
-
-void print_laundry_status(void)
-{
-    int month = current_month();
-    int active = 0;
-
-    printf("Laundry status for %02d-%d:\n", month % 100, month / 100);
-
-    for (int i = 0; i < studentCount; i++)
-    {
-        int paid = (students[i].laundryMonth == month);
-        printf("  %-6s %-20s %s\n", students[i].rollNo, students[i].name,
-               paid ? "paid" : "not taken");
-        active += paid;
-    }
-
-    printf("%d of %d students, Rs %d collected.\n", active, studentCount,
-           active * LAUNDRY_FEE);
-}
-
-
-/* ================================================================
-   MODULE 7: GRAPH - HOSTEL FIRE EXIT ROUTES
-   ================================================================
-   Undirected weighted graph:
-     nodes    = rooms, corridor points, staircases, exits
-     edges    = physical connections
-     weights  = walking distance in metres
-
-   Every floor is one straight corridor with three staircases
-   (A, B, C) that go down to three ground-floor exits:
-
-   Stair A -5- [101] -8- [102] ---20--- Stair B ---20--- [103] -8- [104] -5- Stair C
-      |                                    |                                  |
-   (10 m per floor down to the ground floor, then 5 m to Exit A / B / C)
-
-   [x0y] is the corridor point outside each room's door (2 m from
-   the room). Stair B is set back from the rooms (20 m away).
-
-   From Room 302, BFS picks Stair B (fewest points passed) but
-   Dijkstra picks Stair A (fewest metres): the route through
-   fewer junctions is not always the shortest walk.
-
-   NOTE: distances are placeholders - measure your real hostel.
-*/
-
-typedef struct AdjNode {
-    int nodeIndex;
-    int distance;          /* edge weight in metres */
-    struct AdjNode* next;
-} AdjNode;
-
-AdjNode* floorGraph[MAX_NODES];
-char nodeNames[MAX_NODES][MAX_NAME];   /* "Room 101", "F1 Stair A", "Exit A" */
-int isExit[MAX_NODES];                 /* 1 if this node is an exit */
-int nodeRoomNo[MAX_NODES];             /* room number, 0 if not a room */
-int graphNodeCount = 0;
-
-
-int add_graph_node(const char* name, int exitFlag, int roomNo)
-{
-    int n = graphNodeCount++;
-
-    strncpy(nodeNames[n], name, MAX_NAME - 1);
-    nodeNames[n][MAX_NAME - 1] = '\0';
-    isExit[n] = exitFlag;
-    nodeRoomNo[n] = roomNo;
-    floorGraph[n] = NULL;
-
-    return n;
-}
-
-
-void add_edge(int from, int to, int distance)
-{
-    AdjNode* node = malloc(sizeof(AdjNode));
-
-    if (node == NULL)
-    {
-        printf("Out of memory.\n");
+    printf("Hostel fee of Rs %d paid? (y/n): ", HOSTEL_FEE);
+    if (!readYesNo()) {
+        printf("Fee not paid. Cannot register.\n");
         return;
     }
 
-    node->nodeIndex = to;
-    node->distance = distance;
-    node->next = floorGraph[from];
-    floorGraph[from] = node;
-}
+    do {
+        printf("Name: ");
+        readText(s.name, sizeof s.name);
+    } while (s.name[0] == '\0');        /* name cannot be empty */
 
+    printf("Phone: ");
+    readText(s.phone, sizeof s.phone);
+    printf("Parent phone: ");
+    readText(s.parentPhone, sizeof s.parentPhone);
+    printf("Laundry paid this month? (y/n): ");
+    s.laundryPaid = readYesNo();
+    s.roomNo = 0;
 
-/* Undirected: add to BOTH lists */
-void add_corridor(int a, int b, int distance)
-{
-    add_edge(a, b, distance);
-    add_edge(b, a, distance);
-}
+    /* 1. Store in array */
+    int index = studentCount;
+    students[index] = s;
 
-
-int edge_distance(int a, int b)
-{
-    for (AdjNode* p = floorGraph[a]; p != NULL; p = p->next)
-    {
-        if (p->nodeIndex == b)
-        {
-            return p->distance;
-        }
+    /* 2. Put index in its correct place in sortedIdx[] (shift bigger ones right) */
+    int i = studentCount - 1;
+    while (i >= 0 && students[sortedIdx[i]].roll > s.roll) {
+        sortedIdx[i + 1] = sortedIdx[i];
+        i--;
     }
+    sortedIdx[i + 1] = index;
+    studentCount++;
 
-    return -1;
+    /* 3. Add to hash table and fee AVL tree */
+    hashInsert(s.roll, index);
+    feeRoot = avlInsert(feeRoot, s.roll);
+    feeCount++;
+
+    printf("Student registered.\n");
+}
+
+void printStudent(int i)
+{
+    if (i == -1) {
+        printf("Student not found.\n");
+        return;
+    }
+    printf("Roll: %d | Name: %s | Phone: %s | Parent: %s | Room: ",
+           students[i].roll, students[i].name, students[i].phone, students[i].parentPhone);
+    if (students[i].roomNo == 0) printf("not allotted\n");
+    else                          printf("%d\n", students[i].roomNo);
+}
+
+/* Ask for a roll number and return the student's index (or -1) */
+int askStudent(void)
+{
+    printf("Roll no: ");
+    int roll = readInt();
+
+    int i = hashSearch(roll);
+    if (i == -1)
+        printf("Student not found.\n");
+    return i;
 }
 
 
-void build_floor_graph(void)
+/* ======================= STACK - ROOM ALLOTMENT + UNDO ======================= */
+
+int undoStack[MAX_STUDENTS];     /* stores index of student who got a room */
+int top = -1;
+
+void initRooms(void)
 {
-    char name[MAX_NAME];
-    const char stairLetter[3] = { 'A', 'B', 'C' };
-    int exitNode[3];
-    int stairBelow[3];
-
-    for (int s = 0; s < 3; s++)
-    {
-        snprintf(name, sizeof name, "Exit %c", stairLetter[s]);
-        exitNode[s] = add_graph_node(name, 1, 0);
-        stairBelow[s] = exitNode[s];
-    }
-
-    for (int f = 1; f <= NUM_FLOORS; f++)
-    {
-        int stair[3];
-
-        for (int s = 0; s < 3; s++)
-        {
-            snprintf(name, sizeof name, "F%d Stair %c", f, stairLetter[s]);
-            stair[s] = add_graph_node(name, 0, 0);
-
-            /* Down one floor, or to the exit from floor 1 */
-            add_corridor(stair[s], stairBelow[s], f == 1 ? 5 : 10);
-            stairBelow[s] = stair[s];
+    int k = 0;
+    for (int f = 1; f <= 3; f++)
+        for (int r = 1; r <= 4; r++) {
+            rooms[k].roomNo = f * 100 + r;
+            rooms[k].floor = f;
+            rooms[k].occupied = 0;
+            k++;
         }
-
-        int outside[ROOMS_PER_FLOOR];
-
-        for (int r = 1; r <= ROOMS_PER_FLOOR; r++)
-        {
-            int roomNo = f * 100 + r;
-
-            snprintf(name, sizeof name, "Outside %d", roomNo);
-            outside[r - 1] = add_graph_node(name, 0, 0);
-
-            snprintf(name, sizeof name, "Room %d", roomNo);
-            int room = add_graph_node(name, 0, roomNo);
-
-            add_corridor(room, outside[r - 1], 2);
-        }
-
-        /* The straight corridor, west to east */
-        add_corridor(stair[0], outside[0], 5);
-        add_corridor(outside[0], outside[1], 8);
-        add_corridor(outside[1], stair[1], 20);
-        add_corridor(stair[1], outside[2], 20);
-        add_corridor(outside[2], outside[3], 8);
-        add_corridor(outside[3], stair[2], 5);
-    }
 }
 
-
-int room_to_node(int roomNo)
+int findRoom(int roomNo)
 {
-    for (int i = 0; i < graphNodeCount; i++)
-    {
-        if (nodeRoomNo[i] == roomNo && roomNo != 0)
-        {
+    for (int i = 0; i < NUM_ROOMS; i++)
+        if (rooms[i].roomNo == roomNo)
             return i;
-        }
-    }
-
     return -1;
 }
 
-
-/*
-   Print start -> ... -> end using parent[], with hop count and
-   total distance.
-*/
-void print_path(int parent[], int end)
+/* Give a room to a student. Returns 1 if allotted, 0 if not. */
+int allotRoom(int idx, int roomNo)
 {
-    int path[MAX_NODES];
-    int len = 0;
+    int r = findRoom(roomNo);
 
-    for (int v = end; v != -1; v = parent[v])
-    {
-        path[len++] = v;
+    if (r == -1) {
+        printf("Room not found.\n");
+        return 0;
+    }
+    if (students[idx].roomNo != 0) {
+        printf("Already has room %d.\n", students[idx].roomNo);
+        return 0;
+    }
+    if (rooms[r].occupied >= ROOM_CAPACITY) {
+        printf("Room %d is full.\n", roomNo);
+        return 0;
     }
 
-    int metres = 0;
+    students[idx].roomNo = roomNo;
+    rooms[r].occupied++;
+    undoStack[++top] = idx;                      /* PUSH */
 
-    printf("  ");
+    printf("Room %d given to %s. Beds: %d/%d\n",
+           roomNo, students[idx].name, rooms[r].occupied, ROOM_CAPACITY);
+    return 1;
+}
 
-    for (int i = len - 1; i >= 0; i--)
-    {
-        printf("%s", nodeNames[path[i]]);
-
-        if (i > 0)
-        {
-            printf(" -> ");
-            metres += edge_distance(path[i], path[i - 1]);
-        }
+void undoAllotment(void)
+{
+    if (top == -1) {
+        printf("Nothing to undo.\n");
+        return;
     }
 
-    printf("\n  Hops: %d, Distance: %d m\n", len - 1, metres);
+    int idx = undoStack[top--];                  /* POP - last allotment first */
+    int r = findRoom(students[idx].roomNo);
+
+    if (r != -1 && rooms[r].occupied > 0)
+        rooms[r].occupied--;
+    printf("Undo: %s removed from room %d.\n", students[idx].name, students[idx].roomNo);
+    students[idx].roomNo = 0;
+}
+
+void showRooms(void)
+{
+    for (int i = 0; i < NUM_ROOMS; i++) {
+        printf("Room %d  [%d/%d]  ", rooms[i].roomNo, rooms[i].occupied, ROOM_CAPACITY);
+        for (int j = 0; j < studentCount; j++)
+            if (students[j].roomNo == rooms[i].roomNo)
+                printf("%d ", students[j].roll);
+        printf("\n");
+    }
 }
 
 
-/*
-   BFS: explores level by level, so the first exit dequeued is the
-   one reachable through the FEWEST points (ignores metres).
-*/
-void bfs_nearest_exit(int startNode)
+/* ======================= CIRCULAR QUEUE - WAITING LIST ======================= */
+
+int waitQueue[MAX_STUDENTS];
+int front = 0, rear = -1, waitCount = 0;
+
+int inQueue(int idx)
 {
-    int visited[MAX_NODES] = { 0 };
-    int parent[MAX_NODES];
-    int queue[MAX_NODES];
-    int front = 0, rear = 0;
-
-    for (int i = 0; i < graphNodeCount; i++)
-    {
-        parent[i] = -1;
-    }
-
-    visited[startNode] = 1;
-    queue[rear++] = startNode;
-
-    while (front < rear)
-    {
-        int u = queue[front++];
-
-        if (isExit[u])
-        {
-            printf("BFS nearest exit (fewest hops): %s\n", nodeNames[u]);
-            print_path(parent, u);
-            return;
-        }
-
-        for (AdjNode* a = floorGraph[u]; a != NULL; a = a->next)
-        {
-            int v = a->nodeIndex;
-
-            if (!visited[v])
-            {
-                visited[v] = 1;
-                parent[v] = u;
-                queue[rear++] = v;
-            }
-        }
-    }
-
-    printf("No exit reachable from %s!\n", nodeNames[startNode]);
+    for (int i = 0; i < waitCount; i++)
+        if (waitQueue[(front + i) % MAX_STUDENTS] == idx)
+            return 1;
+    return 0;
 }
 
-
-/*
-   Dijkstra (array version, O(V^2)): shortest walk in metres to
-   every node, then pick the closest exit.
-*/
-void dijkstra_nearest_exit(int startNode)
+void enqueue(int idx)
 {
-    int dist[MAX_NODES];
-    int parent[MAX_NODES];
-    int done[MAX_NODES] = { 0 };
+    if (students[idx].roomNo != 0) { printf("Already has a room.\n"); return; }
+    if (inQueue(idx))              { printf("Already in waiting list.\n"); return; }
 
-    for (int i = 0; i < graphNodeCount; i++)
-    {
-        dist[i] = INF;
-        parent[i] = -1;
-    }
+    rear = (rear + 1) % MAX_STUDENTS;
+    waitQueue[rear] = idx;
+    waitCount++;
+    printf("%s added to waiting list (position %d).\n", students[idx].name, waitCount);
+}
 
-    dist[startNode] = 0;
+int dequeue(void)
+{
+    if (waitCount == 0)
+        return -1;
 
-    for (int k = 0; k < graphNodeCount; k++)
-    {
-        /* Pick the unvisited node with the smallest distance */
-        int u = -1;
+    int idx = waitQueue[front];
+    front = (front + 1) % MAX_STUDENTS;
+    waitCount--;
+    return idx;
+}
 
-        for (int i = 0; i < graphNodeCount; i++)
-        {
-            if (!done[i] && (u == -1 || dist[i] < dist[u]))
-            {
-                u = i;
-            }
-        }
-
-        if (u == -1 || dist[u] == INF)
-        {
+void allotFromWaitingList(void)
+{
+    int freeRoom = -1;
+    for (int i = 0; i < NUM_ROOMS; i++)
+        if (rooms[i].occupied < ROOM_CAPACITY) {
+            freeRoom = i;
             break;
         }
 
-        done[u] = 1;
-
-        /* Relax each neighbour */
-        for (AdjNode* a = floorGraph[u]; a != NULL; a = a->next)
-        {
-            int v = a->nodeIndex;
-
-            if (!done[v] && dist[u] + a->distance < dist[v])
-            {
-                dist[v] = dist[u] + a->distance;
-                parent[v] = u;
-            }
-        }
-    }
-
-    int best = -1;
-
-    for (int i = 0; i < graphNodeCount; i++)
-    {
-        if (isExit[i] && dist[i] != INF && (best == -1 || dist[i] < dist[best]))
-        {
-            best = i;
-        }
-    }
-
-    if (best == -1)
-    {
-        printf("No exit reachable from %s!\n", nodeNames[startNode]);
+    if (freeRoom == -1) {
+        printf("No free beds.\n");
         return;
     }
 
-    printf("Dijkstra nearest exit (shortest walk): %s\n", nodeNames[best]);
-    print_path(parent, best);
-}
+    int idx = dequeue();
+    while (idx != -1 && students[idx].roomNo != 0)   /* skip if they already got a room */
+        idx = dequeue();
 
+    if (idx == -1) {
+        printf("Waiting list is empty.\n");
+        return;
+    }
 
-
-/* ================================================================
-   MODULE 8: SORTING - INSERTION vs SELECTION vs MERGE
-   ================================================================
-   Both sort by roll number and run on COPIES, so students[] (and
-   every index pointing into it) is never disturbed.
-*/
-
-long insertionComparisons = 0, insertionShifts = 0;
-long selectionComparisons = 0, selectionSwaps = 0;
-long mergeComparisons = 0;
-
-
-/* O(n^2): each pass selects the smallest remaining item and swaps
-   it into place. Always n(n-1)/2 comparisons, but at most n-1
-   swaps - the fewest writes of the three. */
-void selection_sort_students(Student a[], int n)
-{
-    for (int i = 0; i < n - 1; i++)
-    {
-        int min = i;
-
-        for (int j = i + 1; j < n; j++)
-        {
-            selectionComparisons++;
-
-            if (compare_roll(a[j].rollNo, a[min].rollNo) < 0)
-            {
-                min = j;
-            }
-        }
-
-        if (min != i)
-        {
-            Student t = a[i];
-            a[i] = a[min];
-            a[min] = t;
-            selectionSwaps++;
-        }
+    if (!allotRoom(idx, rooms[freeRoom].roomNo)) {
+        /* allotment failed: put the student back at the FRONT so they keep their turn */
+        front = (front - 1 + MAX_STUDENTS) % MAX_STUDENTS;
+        waitQueue[front] = idx;
+        waitCount++;
     }
 }
 
 
-/* O(n^2): grow a sorted prefix, shifting larger items right */
-void insertion_sort_students(Student a[], int n)
+/* ======================= PRIORITY QUEUE - COMPLAINTS ======================= */
+/* Sorted linked list: 1 = HIGH comes first. Same priority -> first come first served. */
+
+typedef struct Complaint {
+    int id;
+    int roomNo;
+    char text[100];
+    int priority;
+    struct Complaint *next;
+} Complaint;
+
+Complaint *complaintHead = NULL;
+int nextComplaintId = 1;
+
+void addComplaint(int idx)
 {
-    for (int i = 1; i < n; i++)
-    {
+    if (students[idx].roomNo == 0) {
+        printf("Student has no room.\n");
+        return;
+    }
+
+    Complaint *c = malloc(sizeof(Complaint));
+    if (c == NULL) {
+        printf("Out of memory.\n");
+        return;
+    }
+    c->id = nextComplaintId++;
+    c->roomNo = students[idx].roomNo;
+    printf("Problem: ");
+    readText(c->text, sizeof c->text);
+    printf("Priority (1 = HIGH, 2 = MEDIUM, 3 = LOW): ");
+    c->priority = readInt();
+    if (c->priority < 1 || c->priority > 3)
+        c->priority = 3;                         /* treat invalid input as LOW */
+
+    /* insert at the right position */
+    if (complaintHead == NULL || c->priority < complaintHead->priority) {
+        c->next = complaintHead;
+        complaintHead = c;
+    } else {
+        Complaint *p = complaintHead;
+        while (p->next != NULL && p->next->priority <= c->priority)
+            p = p->next;
+        c->next = p->next;
+        p->next = c;
+    }
+    printf("Complaint #%d filed.\n", c->id);
+}
+
+void resolveComplaint(void)
+{
+    if (complaintHead == NULL) {
+        printf("No complaints.\n");
+        return;
+    }
+
+    Complaint *c = complaintHead;                /* most urgent is always at head */
+    complaintHead = complaintHead->next;
+
+    char *level[] = {"", "HIGH", "MEDIUM", "LOW"};
+    printf("Resolving #%d [%s] Room %d: %s\n", c->id, level[c->priority], c->roomNo, c->text);
+    free(c);
+}
+
+
+/* ======================= LINKED LISTS - GATE ENTRY / EXIT ======================= */
+
+/* Doubly linked list: students currently outside */
+typedef struct OutNode {
+    int idx;
+    char time[20];
+    struct OutNode *prev, *next;
+} OutNode;
+
+OutNode *outHead = NULL;
+
+/* Singly linked list per student: gate history, newest first */
+typedef struct GateLog {
+    char type[4];               /* "OUT" or "IN" */
+    char time[20];
+    struct GateLog *next;
+} GateLog;
+
+GateLog *gateHistory[MAX_STUDENTS];
+
+void addGateLog(int idx, char *type)
+{
+    GateLog *g = malloc(sizeof(GateLog));
+    if (g == NULL) {
+        printf("Out of memory.\n");
+        return;
+    }
+    strcpy(g->type, type);
+    getTime(g->time);
+    g->next = gateHistory[idx];         /* insert at head */
+    gateHistory[idx] = g;
+}
+
+OutNode *findOutside(int idx)
+{
+    for (OutNode *p = outHead; p != NULL; p = p->next)
+        if (p->idx == idx)
+            return p;
+    return NULL;
+}
+
+void goingOut(int idx)
+{
+    time_t now = time(NULL);
+    int hour = localtime(&now)->tm_hour;
+
+    if (hour >= CURFEW_HOUR || hour < 6) { printf("Gate closed (10 PM - 6 AM).\n"); return; }
+    if (findOutside(idx) != NULL)        { printf("Already outside.\n"); return; }
+
+    OutNode *node = malloc(sizeof(OutNode));
+    if (node == NULL) {
+        printf("Out of memory.\n");
+        return;
+    }
+    node->idx = idx;
+    getTime(node->time);
+    node->prev = NULL;
+    node->next = outHead;               /* insert at head */
+    if (outHead != NULL)
+        outHead->prev = node;
+    outHead = node;
+
+    addGateLog(idx, "OUT");
+    printf("%s went out. Parent phone: %s. Return before 10 PM.\n",
+           students[idx].name, students[idx].parentPhone);
+}
+
+void comingIn(int idx)
+{
+    OutNode *node = findOutside(idx);
+    if (node == NULL) {
+        printf("Student is not outside.\n");
+        return;
+    }
+
+    /* remove node using prev and next pointers */
+    if (node->prev != NULL) node->prev->next = node->next;
+    else                    outHead = node->next;
+    if (node->next != NULL) node->next->prev = node->prev;
+    free(node);
+
+    addGateLog(idx, "IN");
+
+    time_t now = time(NULL);
+    int hour = localtime(&now)->tm_hour;
+    if (hour >= CURFEW_HOUR || hour < 6)
+        printf("%s is back - LATE ENTRY after curfew.\n", students[idx].name);
+    else
+        printf("%s is back in the hostel.\n", students[idx].name);
+}
+
+void showOutside(void)
+{
+    if (outHead == NULL) {
+        printf("Everyone is inside.\n");
+        return;
+    }
+    for (OutNode *p = outHead; p != NULL; p = p->next)
+        printf("  %d  %-15s  out since %s  parent %s\n", students[p->idx].roll,
+               students[p->idx].name, p->time, students[p->idx].parentPhone);
+}
+
+void showGateHistory(int idx)
+{
+    if (gateHistory[idx] == NULL) {
+        printf("No gate entries.\n");
+        return;
+    }
+    for (GateLog *g = gateHistory[idx]; g != NULL; g = g->next)
+        printf("  %-3s  %s\n", g->type, g->time);
+}
+
+
+/* ======================= GRAPH - FIRE EXIT (BFS + DIJKSTRA) ======================= */
+/*
+   Same layout on every floor (distance in metres):
+
+   Stair A --5-- Room x01 --8-- Room x02 --20-- Stair B --20-- Room x03 --8-- Room x04 --5-- Stair C
+
+   Every stair leads down to an exit.
+   From room x02: BFS picks Stair B (fewest steps), Dijkstra picks Stair A (shortest metres).
+*/
+
+#define NODES 7
+#define INF 99999
+
+char *nodeName[NODES] = {"Stair A", "Room x01", "Room x02", "Stair B",
+                         "Room x03", "Room x04", "Stair C"};
+int isExit[NODES] = {1, 0, 0, 1, 0, 0, 1};
+int graph[NODES][NODES];        /* adjacency matrix, 0 = no corridor */
+
+void addEdge(int a, int b, int dist)
+{
+    graph[a][b] = dist;
+    graph[b][a] = dist;
+}
+
+void buildGraph(void)
+{
+    addEdge(0, 1, 5);
+    addEdge(1, 2, 8);
+    addEdge(2, 3, 20);
+    addEdge(3, 4, 20);
+    addEdge(4, 5, 8);
+    addEdge(5, 6, 5);
+}
+
+/* room 101 -> node 1, 102 -> node 2, 103 -> node 4, 104 -> node 5 */
+int roomToNode(int roomNo)
+{
+    int map[] = {-1, 1, 2, 4, 5};
+    int r = roomNo % 100;
+    if (findRoom(roomNo) == -1)
+        return -1;
+    return map[r];
+}
+
+void printPath(int parent[], int v)
+{
+    if (parent[v] != -1) {
+        printPath(parent, parent[v]);
+        printf(" -> ");
+    }
+    printf("%s", nodeName[v]);
+}
+
+void bfs(int start)
+{
+    int visited[NODES] = {0}, parent[NODES], queue[NODES];
+    int f = 0, r = 0;
+
+    for (int i = 0; i < NODES; i++) parent[i] = -1;
+    visited[start] = 1;
+    queue[r++] = start;
+
+    while (f < r) {
+        int u = queue[f++];
+        if (isExit[u]) {
+            printf("BFS (fewest steps): ");
+            printPath(parent, u);
+            printf("\n");
+            return;
+        }
+        for (int v = 0; v < NODES; v++)
+            if (graph[u][v] != 0 && !visited[v]) {
+                visited[v] = 1;
+                parent[v] = u;
+                queue[r++] = v;
+            }
+    }
+    printf("No exit reachable!\n");
+}
+
+void dijkstra(int start)
+{
+    int dist[NODES], done[NODES] = {0}, parent[NODES];
+
+    for (int i = 0; i < NODES; i++) {
+        dist[i] = INF;
+        parent[i] = -1;
+    }
+    dist[start] = 0;
+
+    for (int k = 0; k < NODES; k++) {
+        int u = -1;
+        for (int i = 0; i < NODES; i++)          /* pick nearest unvisited node */
+            if (!done[i] && (u == -1 || dist[i] < dist[u]))
+                u = i;
+
+        if (u == -1 || dist[u] == INF)           /* nothing reachable is left */
+            break;
+        done[u] = 1;
+
+        for (int v = 0; v < NODES; v++)          /* relax neighbours */
+            if (graph[u][v] != 0 && dist[u] + graph[u][v] < dist[v]) {
+                dist[v] = dist[u] + graph[u][v];
+                parent[v] = u;
+            }
+    }
+
+    int best = -1;
+    for (int i = 0; i < NODES; i++)
+        if (isExit[i] && dist[i] != INF && (best == -1 || dist[i] < dist[best]))
+            best = i;
+
+    if (best == -1) {
+        printf("No exit reachable!\n");
+        return;
+    }
+
+    printf("Dijkstra (shortest walk): ");
+    printPath(parent, best);
+    printf("  = %d m\n", dist[best]);
+}
+
+
+/* ======================= SORTING ======================= */
+
+int comparisons;
+
+void insertionSort(Student a[], int n)
+{
+    for (int i = 1; i < n; i++) {
         Student key = a[i];
         int j = i - 1;
-
-        while (j >= 0)
-        {
-            insertionComparisons++;
-
-            if (compare_roll(a[j].rollNo, key.rollNo) <= 0)
-            {
-                break;
-            }
-
+        while (j >= 0 && (comparisons++, a[j].roll > key.roll)) {
             a[j + 1] = a[j];
-            insertionShifts++;
             j--;
         }
-
         a[j + 1] = key;
     }
 }
 
-
-void merge(Student a[], Student temp[], int left, int mid, int right)
+void selectionSort(Student a[], int n)
 {
-    int i = left, j = mid + 1, k = left;
-
-    while (i <= mid && j <= right)
-    {
-        mergeComparisons++;
-
-        if (compare_roll(a[i].rollNo, a[j].rollNo) <= 0)
-        {
-            temp[k++] = a[i++];
+    for (int i = 0; i < n - 1; i++) {
+        int min = i;
+        for (int j = i + 1; j < n; j++) {
+            comparisons++;
+            if (a[j].roll < a[min].roll)
+                min = j;
         }
-        else
-        {
-            temp[k++] = a[j++];
-        }
-    }
-
-    while (i <= mid)
-    {
-        temp[k++] = a[i++];
-    }
-
-    while (j <= right)
-    {
-        temp[k++] = a[j++];
-    }
-
-    for (k = left; k <= right; k++)
-    {
-        a[k] = temp[k];
+        Student t = a[i]; a[i] = a[min]; a[min] = t;
     }
 }
 
-
-/* O(n log n): split in half, sort each half, merge */
-void merge_sort_students(Student a[], Student temp[], int left, int right)
+void merge(Student a[], int l, int m, int r)
 {
-    if (left >= right)
-    {
+    Student temp[MAX_STUDENTS];
+    int i = l, j = m + 1, k = 0;
+
+    while (i <= m && j <= r) {
+        comparisons++;
+        if (a[i].roll <= a[j].roll) temp[k++] = a[i++];
+        else                        temp[k++] = a[j++];
+    }
+    while (i <= m) temp[k++] = a[i++];
+    while (j <= r) temp[k++] = a[j++];
+
+    for (k = 0; k < r - l + 1; k++)
+        a[l + k] = temp[k];
+}
+
+void mergeSort(Student a[], int l, int r)
+{
+    if (l >= r)
+        return;
+    int m = (l + r) / 2;
+    mergeSort(a, l, m);
+    mergeSort(a, m + 1, r);
+    merge(a, l, m, r);
+}
+
+void compareSorts(void)
+{
+    Student copy[MAX_STUDENTS];       /* sort a copy so indices in students[] stay the same */
+
+    if (studentCount == 0) {
+        printf("No students registered.\n");
         return;
     }
 
-    int mid = left + (right - left) / 2;
+    memcpy(copy, students, sizeof(Student) * studentCount);
+    comparisons = 0;
+    insertionSort(copy, studentCount);
+    printf("Insertion sort comparisons: %d\n", comparisons);
 
-    merge_sort_students(a, temp, left, mid);
-    merge_sort_students(a, temp, mid + 1, right);
-    merge(a, temp, left, mid, right);
+    memcpy(copy, students, sizeof(Student) * studentCount);
+    comparisons = 0;
+    selectionSort(copy, studentCount);
+    printf("Selection sort comparisons: %d\n", comparisons);
+
+    memcpy(copy, students, sizeof(Student) * studentCount);
+    comparisons = 0;
+    mergeSort(copy, 0, studentCount - 1);
+    printf("Merge sort comparisons:     %d\n", comparisons);
+
+    printf("Sorted by roll no:\n");
+    for (int i = 0; i < studentCount; i++)
+        printf("  %d  %s\n", copy[i].roll, copy[i].name);
 }
 
 
-Student sortA[MAX_STUDENTS], sortB[MAX_STUDENTS], sortC[MAX_STUDENTS];
-Student sortTemp[MAX_STUDENTS];
+/* ======================= LAUNDRY ======================= */
 
-
-/* Sort the same data all three ways and record the counts */
-void run_all_sorts(int n)
+void showLaundry(void)
 {
-    memcpy(sortB, sortA, n * sizeof(Student));
-    memcpy(sortC, sortA, n * sizeof(Student));
-
-    insertionComparisons = insertionShifts = 0;
-    selectionComparisons = selectionSwaps = 0;
-    mergeComparisons = 0;
-
-    insertion_sort_students(sortA, n);
-    selection_sort_students(sortC, n);
-    merge_sort_students(sortB, sortTemp, 0, n - 1);
+    int paid = 0;
+    for (int i = 0; i < studentCount; i++) {
+        printf("  %d  %-15s %s\n", students[i].roll, students[i].name,
+               students[i].laundryPaid ? "paid" : "not paid");
+        paid += students[i].laundryPaid;
+    }
+    printf("%d students paid, Rs %d collected.\n", paid, paid * LAUNDRY_FEE);
 }
 
 
-void compare_sorts(void)
+/* ======================= MAIN MENU ======================= */
+
+int main(void)
 {
-    if (studentCount > 0)
-    {
-        memcpy(sortA, students, studentCount * sizeof(Student));
-        run_all_sorts(studentCount);
+    int choice, idx, n;
 
-        printf("Registered students sorted by roll no:\n");
+    initRooms();
+    buildGraph();
 
-        for (int i = 0; i < studentCount; i++)
-        {
-            printf("  %-6s %s\n", sortB[i].rollNo, sortB[i].name);
+    do {
+        printf("\n===== HOSTEL MANAGEMENT SYSTEM =====\n");
+        printf(" 1. Register student          2. Linear search\n");
+        printf(" 3. Binary search             4. Hash search\n");
+        printf(" 5. Allot room                6. Undo last allotment\n");
+        printf(" 7. Add to waiting list       8. Allot from waiting list\n");
+        printf(" 9. View rooms               10. File complaint\n");
+        printf("11. Resolve complaint        12. View fee payments\n");
+        printf("13. Pay laundry              14. View laundry\n");
+        printf("15. Student going out        16. Student coming in\n");
+        printf("17. Students outside         18. Gate history\n");
+        printf("19. Fire exit (BFS)          20. Fire exit (Dijkstra)\n");
+        printf("21. Compare sorting           0. Exit\n");
+        printf("Choice: ");
+
+        choice = readInt();
+
+        switch (choice) {
+        case 1:  registerStudent(); break;
+
+        case 2: case 3: case 4:
+            printf("Roll no: ");
+            n = readInt();
+            if (choice == 2)      printStudent(linearSearch(n));
+            else if (choice == 3) printStudent(binarySearch(n));
+            else                  printStudent(hashSearch(n));
+            break;
+
+        case 5:
+            if ((idx = askStudent()) != -1) {
+                printf("Room no: ");
+                n = readInt();
+                allotRoom(idx, n);
+            }
+            break;
+
+        case 6:  undoAllotment(); break;
+        case 7:  if ((idx = askStudent()) != -1) enqueue(idx); break;
+        case 8:  allotFromWaitingList(); break;
+        case 9:  showRooms(); break;
+        case 10: if ((idx = askStudent()) != -1) addComplaint(idx); break;
+        case 11: resolveComplaint(); break;
+        case 12: showFees(); break;
+
+        case 13:
+            if ((idx = askStudent()) != -1) {
+                if (students[idx].laundryPaid) {
+                    printf("Laundry already paid this month.\n");
+                } else {
+                    students[idx].laundryPaid = 1;
+                    printf("Laundry paid: Rs %d for 75 clothes.\n", LAUNDRY_FEE);
+                }
+            }
+            break;
+
+        case 14: showLaundry(); break;
+        case 15: if ((idx = askStudent()) != -1) goingOut(idx); break;
+        case 16: if ((idx = askStudent()) != -1) comingIn(idx); break;
+        case 17: showOutside(); break;
+        case 18: if ((idx = askStudent()) != -1) showGateHistory(idx); break;
+
+        case 19: case 20: {
+            printf("Room no: ");
+            n = readInt();
+            int node = roomToNode(n);
+            if (node == -1)        printf("Room not found.\n");
+            else if (choice == 19) bfs(node);
+            else                   dijkstra(node);
+            break;
         }
 
-        printf("Insertion sort: %ld comparisons, %ld shifts\n",
-               insertionComparisons, insertionShifts);
-        printf("Selection sort: %ld comparisons, %ld swaps\n",
-               selectionComparisons, selectionSwaps);
-        printf("Merge sort:     %ld comparisons\n\n", mergeComparisons);
-    }
-
-    /* Same experiment on random roll numbers at growing n.
-       Fixed seed so the numbers in the report are reproducible. */
-    int sizes[] = { 10, 50, 200 };
-
-    srand(42);
-
-    printf("Random roll numbers (seed 42):\n");
-    printf("         ---- Insertion ----   ---- Selection ----   - Merge -\n");
-    printf("    n    compares     shifts   compares      swaps    compares\n");
-
-    for (int s = 0; s < 3; s++)
-    {
-        int n = sizes[s];
-
-        for (int i = 0; i < n; i++)
-        {
-            snprintf(sortA[i].rollNo, ROLL_LEN, "N%03d", rand() % 1000);
+        case 21: compareSorts(); break;
+        case 0:  printf("Bye!\n"); freeMemory(); break;
+        default: printf("Invalid choice.\n");
         }
+    } while (choice != 0);
 
-        run_all_sorts(n);
-
-        printf("  %3d  %10ld %10ld %10ld %10ld  %10ld\n", n,
-               insertionComparisons, insertionShifts,
-               selectionComparisons, selectionSwaps, mergeComparisons);
-    }
+    return 0;
 }
 
 
-/* ================================================================
-   CLEANUP
-   ================================================================ */
+/* ======================= FREE MEMORY ======================= */
+/* Free every node we created with malloc before the program ends */
 
-void free_avl(AVLNode* root)
+void freeAVL(AVLNode *root)
 {
     if (root == NULL)
-    {
         return;
-    }
-
-    free_avl(root->left);
-    free_avl(root->right);
+    freeAVL(root->left);
+    freeAVL(root->right);
     free(root);
 }
 
-
-void free_all(void)
+void freeMemory(void)
 {
-    for (int i = 0; i < studentCount; i++)
-    {
-        GateNode* p = gateHead[i];
-
-        while (p != NULL)
-        {
-            GateNode* next = p->next;
+    for (int i = 0; i < HASH_SIZE; i++) {           /* hash table chains */
+        HashNode *p = hashTable[i];
+        while (p != NULL) {
+            HashNode *next = p->next;
             free(p);
             p = next;
         }
-
-        gateHead[i] = gateTail[i] = NULL;
-        outNodeOf[i] = NULL;
+        hashTable[i] = NULL;
     }
 
-    while (outHead != NULL)
-    {
-        OutNode* next = outHead->next;
+    freeAVL(feeRoot);                               /* fee tree */
+    feeRoot = NULL;
+
+    while (complaintHead != NULL) {                 /* complaints */
+        Complaint *next = complaintHead->next;
+        free(complaintHead);
+        complaintHead = next;
+    }
+
+    while (outHead != NULL) {                       /* students outside */
+        OutNode *next = outHead->next;
         free(outHead);
         outHead = next;
     }
 
-    outTail = NULL;
-
-    for (int r = 0; r < roomCount; r++)
-    {
-        while (cleanFront[r] != NULL)
-        {
-            CleanNode* next = cleanFront[r]->next;
-            free(cleanFront[r]);
-            cleanFront[r] = next;
+    for (int i = 0; i < studentCount; i++) {        /* gate history */
+        GateLog *g = gateHistory[i];
+        while (g != NULL) {
+            GateLog *next = g->next;
+            free(g);
+            g = next;
         }
-
-        cleanRear[r] = NULL;
+        gateHistory[i] = NULL;
     }
-
-    for (int f = 0; f <= NUM_FLOORS; f++)
-    {
-        DutyNode* p = floorDuty[f];
-
-        while (p != NULL)
-        {
-            DutyNode* next = p->next;
-            free(p);
-            p = next;
-        }
-
-        floorDuty[f] = NULL;
-    }
-
-    for (int i = 0; i < HASH_SIZE; i++)
-    {
-        HashNode* p = hashTable[i];
-
-        while (p != NULL)
-        {
-            HashNode* next = p->next;
-            free(p);
-            p = next;
-        }
-
-        hashTable[i] = NULL;
-    }
-
-    free_avl(feeTreeRoot);
-    feeTreeRoot = NULL;
-    feeTreeSize = 0;
-
-    for (int i = 0; i < graphNodeCount; i++)
-    {
-        AdjNode* p = floorGraph[i];
-
-        while (p != NULL)
-        {
-            AdjNode* next = p->next;
-            free(p);
-            p = next;
-        }
-
-        floorGraph[i] = NULL;
-    }
-}
-
-
-/* ================================================================
-   MAIN PROGRAM
-   ================================================================ */
-
-/*
-   Prompt for a roll number and look it up in the hash table.
-   Prints "Student not found." and returns -1 if absent.
-*/
-int prompt_student(void)
-{
-    char roll[ROLL_LEN];
-
-    read_roll("Enter roll no (e.g. N254): ", roll);
-
-    int index = hash_lookup(roll);
-
-    if (index == -1)
-    {
-        printf("Student not found.\n");
-    }
-
-    return index;
-}
-
-
-int prompt_floor(void)
-{
-    return read_int_range("Enter floor (1-3): ", 1, NUM_FLOORS);
-}
-
-
-void print_menu(void)
-{
-    printf("\n===== %s HOSTEL MANAGEMENT SYSTEM (Warden Console) =====\n", hostelType);
-    printf("--- Students ---\n");
-    printf("1.  Register Student\n");
-    printf("2.  Search Student (linear)\n");
-    printf("3.  Search Student (binary)\n");
-    printf("4.  Search Student (hash table)\n");
-    printf("--- Rooms ---\n");
-    printf("5.  Allot Room\n");
-    printf("6.  Undo Last Allotment (stack)\n");
-    printf("7.  Add to Room Waiting List\n");
-    printf("8.  Allot Next from Waiting List\n");
-    printf("9.  View Rooms\n");
-    printf("--- Room Cleaning ---\n");
-    printf("10. Record Today's Cleaning (asks student)\n");
-    printf("11. View Room Cleaning Record\n");
-    printf("--- Complaints ---\n");
-    printf("12. File Complaint (priority queue)\n");
-    printf("13. Resolve Next Complaint (most urgent first)\n");
-    printf("--- Staff ---\n");
-    printf("14. Assign Staff to Floor\n");
-    printf("15. Remove Staff from Floor\n");
-    printf("16. View Floor Duty Roster\n");
-    printf("--- Fees & Laundry ---\n");
-    printf("17. View Hostel Fee Payments (AVL tree)\n");
-    printf("18. Laundry for This Month (Rs 500, 75 clothes)\n");
-    printf("19. View Laundry Status\n");
-    printf("--- Gate (curfew %d PM) ---\n", curfewHour - 12);
-    printf("20. Student Going Out\n");
-    printf("21. Student Coming In\n");
-    printf("22. Students Currently Outside (warden's office)\n");
-    printf("23. View Student Gate History\n");
-    printf("--- Fire Safety ---\n");
-    printf("24. Nearest Exit from Room (BFS - fewest hops)\n");
-    printf("25. Nearest Exit from Room (Dijkstra - shortest metres)\n");
-    printf("--- Analysis ---\n");
-    printf("26. Sort Students (insertion vs selection vs merge)\n");
-    printf("0.  Exit\n");
-}
-
-
-int main(void)
-{
-    printf("Is this a boys or girls hostel?\n");
-
-    if (read_int_range("1 = Boys (curfew 10 PM), 2 = Girls (curfew 9 PM): ", 1, 2) == 2)
-    {
-        hostelType = "GIRLS";
-        curfewHour = 21;
-    }
-    else
-    {
-        hostelType = "BOYS";
-        curfewHour = 22;
-    }
-
-    initialize_rooms();
-    initialize_staff();
-    build_floor_graph();
-
-    int choice;
-
-    do
-    {
-        print_menu();
-        choice = read_int("Choice: ");
-
-        switch (choice)
-        {
-            case 1:
-            {
-                Student s;
-
-                read_roll("Enter roll no (e.g. N254): ", s.rollNo);
-
-                if (hash_lookup(s.rollNo) != -1)
-                {
-                    printf("Student with roll number %s already exists.\n", s.rollNo);
-                    break;
-                }
-
-                if (!read_yes_no("Paid hostel fees (Rs 1,00,000)? (y/n): "))
-                {
-                    printf("Hostel fees not paid. Not allowed in hostel.\n");
-                    break;
-                }
-
-                int laundryPaid = read_yes_no("Paid laundry fees (Rs 500 this month)? (y/n): ");
-
-                do
-                {
-                    read_line("Enter name: ", s.name, sizeof s.name);
-                } while (s.name[0] == '\0');
-
-                read_phone("Student phone: ", s.phone);
-                read_phone("Parent phone 1: ", s.parentPhone1);
-                read_phone("Parent phone 2: ", s.parentPhone2);
-
-                s.roomNo = 0;          /* Initially student has no room */
-                s.hostelFeePaid = 1;   /* Checked above: only paid students enter */
-                s.feePaidOn = time(NULL);
-                s.laundryMonth = laundryPaid ? current_month() : 0;
-
-                if (add_student(s))
-                {
-                    feeTreeRoot = avl_insert(feeTreeRoot, hash_lookup(s.rollNo));
-                    printf("Student registered successfully.\n");
-                }
-
-                break;
-            }
-
-            case 2:
-            case 3:
-            case 4:
-            {
-                char roll[ROLL_LEN];
-
-                read_roll("Enter roll no to search: ", roll);
-
-                if (choice == 2)
-                {
-                    print_student(linear_search_student(roll));
-                }
-                else if (choice == 3)
-                {
-                    print_student(binary_search_student(roll));
-                }
-                else
-                {
-                    print_student(hash_lookup(roll));
-                }
-
-                break;
-            }
-
-            case 5:
-            {
-                int index = prompt_student();
-
-                if (index != -1)
-                {
-                    allot_room(index, read_int("Enter room no: "));
-                }
-
-                break;
-            }
-
-            case 6:
-                undo_last_allotment();
-                break;
-
-            case 7:
-            {
-                int index = prompt_student();
-
-                if (index == -1)
-                {
-                    break;
-                }
-
-                if (students[index].roomNo != 0)
-                {
-                    printf("%s already has Room %d.\n", students[index].name,
-                           students[index].roomNo);
-                }
-                else if (is_in_waiting_list(index))
-                {
-                    printf("%s is already on the waiting list.\n", students[index].name);
-                }
-                else
-                {
-                    enqueue_waiting(index);
-                }
-
-                break;
-            }
-
-            case 8:
-            {
-                if (wlCount == 0)
-                {
-                    printf("Waiting list is empty.\n");
-                    break;
-                }
-
-                int roomIndex = find_free_room();
-
-                if (roomIndex == -1)
-                {
-                    printf("No free beds. Waiting list unchanged.\n");
-                    break;
-                }
-
-                allot_room(dequeue_waiting(), rooms[roomIndex].roomNo);
-                break;
-            }
-
-            case 9:
-                print_rooms();
-                break;
-
-            case 10:
-            {
-                int index = prompt_student();
-
-                if (index != -1)
-                {
-                    record_cleaning(index);
-                }
-
-                break;
-            }
-
-            case 11:
-                print_cleaning_record(read_int("Enter room no: "));
-                break;
-
-            case 12:
-            {
-                int index = prompt_student();
-
-                if (index == -1)
-                {
-                    break;
-                }
-
-                if (students[index].roomNo == 0)
-                {
-                    printf("Student has no room allotted.\n");
-                    break;
-                }
-
-                Complaint c;
-
-                c.studentIndex = index;
-                c.roomNo = students[index].roomNo;
-                c.resolved = 0;
-
-                read_line("Describe the problem in your room: ", c.description,
-                          sizeof c.description);
-
-                c.priority = (Priority)read_int_range(
-                    "Priority (1 = HIGH, 2 = MEDIUM, 3 = LOW): ", COMP_HIGH, COMP_LOW);
-                c.complaintId = nextComplaintId++;
-
-                complaint_enqueue(c);
-                break;
-            }
-
-            case 13:
-            {
-                if (complaintCount == 0)
-                {
-                    printf("No pending complaints.\n");
-                    break;
-                }
-
-                Complaint c = complaint_dequeue();
-                c.resolved = 1;
-
-                printf("Resolving complaint #%d [%s]\n", c.complaintId,
-                       priority_name(c.priority));
-                printf("  Room %d (%s): %s\n", c.roomNo,
-                       students[c.studentIndex].rollNo, c.description);
-
-                int roomIndex = find_room(c.roomNo);
-
-                if (roomIndex != -1)
-                {
-                    print_floor_duty(rooms[roomIndex].floor);
-                }
-
-                printf("%d complaint(s) still pending.\n", complaintCount);
-                break;
-            }
-
-            case 14:
-            {
-                print_staff_list();
-
-                int staffId = read_int("Enter staff ID: ");
-
-                assign_staff_to_floor(prompt_floor(), staffId);
-                break;
-            }
-
-            case 15:
-            {
-                int floor = prompt_floor();
-
-                print_floor_duty(floor);
-
-                if (floorDuty[floor] != NULL)
-                {
-                    remove_staff_from_floor(floor, read_int("Enter staff ID: "));
-                }
-
-                break;
-            }
-
-            case 16:
-                print_floor_duty(prompt_floor());
-                break;
-
-            case 17:
-                print_fee_payments();
-                break;
-
-            case 18:
-            {
-                int index = prompt_student();
-
-                if (index != -1)
-                {
-                    pay_laundry(index);
-                }
-
-                break;
-            }
-
-            case 19:
-                print_laundry_status();
-                break;
-
-            case 20:
-            case 21:
-            case 23:
-            {
-                int index = prompt_student();
-
-                if (index == -1)
-                {
-                    break;
-                }
-
-                if (choice == 20)
-                {
-                    going_out(index);
-                }
-                else if (choice == 21)
-                {
-                    coming_in(index);
-                }
-                else
-                {
-                    print_gate_log_recent_first(index);
-                }
-
-                break;
-            }
-
-            case 22:
-                print_students_outside();
-                break;
-
-            case 24:
-            case 25:
-            {
-                int node = room_to_node(read_int("Enter room no: "));
-
-                if (node == -1)
-                {
-                    printf("Room not found.\n");
-                }
-                else if (choice == 24)
-                {
-                    bfs_nearest_exit(node);
-                }
-                else
-                {
-                    dijkstra_nearest_exit(node);
-                }
-
-                break;
-            }
-
-            case 26:
-                compare_sorts();
-                break;
-
-            case 0:
-                printf("Exiting...\n");
-                break;
-
-            default:
-                printf("Invalid choice.\n");
-        }
-
-    } while (choice != 0);
-
-    free_all();
-
-    return 0;
 }
